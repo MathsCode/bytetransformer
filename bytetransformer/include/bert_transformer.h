@@ -82,9 +82,11 @@ class BertTransformerParam {
 
 template <typename T>
 struct BertTransformerInferParam {
-  const T *input_tensor;  // [batch_size, seq_len, hidden_dim]
+  //[xjm:] remove the const 
+   T *input_tensor;  // [batch_size, seq_len, hidden_dim]
   const T *atten_mask;    // [batch_size, seq_len, seq_len]  [1, 0]
   T *transformer_output;  // [batch_size, seq_len, hidden_dim]
+  T *qkv_cache_ptr;
   void *buf;
   int batch_size;
   int seq_len;

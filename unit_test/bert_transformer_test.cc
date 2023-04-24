@@ -169,9 +169,10 @@ int main(int argc, char *argv[]) {
 
   T *transformer_out;
   device_malloc(&transformer_out, batch_size * seq_len * hidden_dim);
-
+  T *qkv_cache_ptr;
+  device_malloc(&qkv_cache_ptr, batch_size * seq_len * hidden_dim*3);
   struct BertTransformerInferParam<T> infer_param {
-    from_tensor, atten_mask, transformer_out, buf, batch_size, seq_len, cublas_handle, stream
+    from_tensor, atten_mask, transformer_out, qkv_cache_ptr,buf, batch_size, seq_len, cublas_handle, stream
   };
   transformer_layer->infer(infer_param);
 

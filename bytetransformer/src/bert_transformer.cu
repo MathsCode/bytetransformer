@@ -27,12 +27,15 @@ namespace bytetransformer {
 template <OperationType OpType>
 void BertTransformer<OpType>::bert_infer(
     BertTransformerInferParam infer_param) {
-  const DataType_* from_tensor = infer_param.input_tensor;
+        // [xjm:] remove the const
+   DataType_* from_tensor = infer_param.input_tensor;
   const DataType_* atten_mask = infer_param.atten_mask;
   DataType_* transformer_out = infer_param.transformer_output;
+  DataType_* qkv_cache_ptr = infer_param.qkv_cache_ptr;
   void* buf = infer_param.buf;
   const int batch_size = infer_param.batch_size;
   const int seq_len = infer_param.seq_len;
+  const float alpha = 1.0;
   cublasHandle_t cublas_handle = infer_param.cublas_handle;
   cudaStream_t stream = infer_param.stream;
 
@@ -52,7 +55,7 @@ void BertTransformer<OpType>::bert_infer(
   int hidden_dim = (OpType == OperationType::HALF)
                        ? (hidden_dim_ / 2)
                        : hidden_dim_;  // for float & half
-
+    
   ET_Param et_param;
   if (is_remove_padding_) {
     et_param.word_idx =
@@ -81,11 +84,12 @@ void BertTransformer<OpType>::bert_infer(
   int m = valid_word_num;
   int k = head_num_ * size_per_head_;
   int n = k;
-
+  
   dense_layer_kernel_launcher(from_tensor, param_.attr_kernel_QKV, qkv_buf, m,
                               k, n * 3, cublas_handle, stream,
                               param_.cublas_Algo[0]);
-
+    // cudaMemcpy(qkv_cache_ptr,qkv_buf,m*n*3*sizeof(DataType_),cudaMemcpyDeviceToDevice);
+    
   cudaEvent_t beg, end;
   float elapsed_time = 0.0;
   cudaEventCreate(&beg);
@@ -98,24 +102,38 @@ void BertTransformer<OpType>::bert_infer(
   };
   attention_infer_param.attention_bias = infer_param.attention_bias;
   attention_layer_->infer(attention_infer_param);
+  cudaMemcpy(qkv_cache_ptr,qkv_buf,m*n*3*sizeof(DataType_),cudaMemcpyDeviceToDevice);
 
   dense_layer_kernel_launcher(attr_out_buf, param_.attr_output_kernel,
                               attr_matmul_buf, m, k, n, cublas_handle, stream,
                               param_.cublas_Algo[0]);
+//   add_bias_input_layernorm_kernel_launcher(
+//       attr_matmul_buf, from_tensor, param_.attr_output_bias,
+//       param_.attr_output_layernorm_gamma, param_.attr_output_layernorm_beta, m,
+//       n, hidden_dim, stream, use_fp32_);
 
+    // [xjm:] add the residual part
+    // cudaMemcpy(qkv_cache_ptr,attr_matmul_buf,m*n*sizeof(DataType_),cudaMemcpyDeviceToDevice);
+    DataType_* residual;
+    cudaMalloc((void **)&residual,m*n*sizeof(DataType_));
   add_bias_input_layernorm_kernel_launcher(
-      attr_matmul_buf, from_tensor, param_.attr_output_bias,
+      attr_matmul_buf, from_tensor, residual,param_.attr_output_bias,
       param_.attr_output_layernorm_gamma, param_.attr_output_layernorm_beta, m,
       n, hidden_dim, stream, use_fp32_);
+    // cudaMemcpy(qkv_cache_ptr,residual,m*n*sizeof(DataType_),cudaMemcpyDeviceToDevice);
 
-  gemm_bias_gelu(attr_matmul_buf, param_.inter_kernel, inter_matmul_buf,
+
+//   gemm_bias_gelu(attr_matmul_buf, param_.inter_kernel, inter_matmul_buf,
+//                  param_.inter_bias, m, k, n * param_.intermediate_size, stream,
+//                  cublas_handle, param_.cublas_Algo[1], arch_);
+    gemm_bias_relu(attr_matmul_buf, param_.inter_kernel, inter_matmul_buf,
                  param_.inter_bias, m, k, n * param_.intermediate_size, stream,
                  cublas_handle, param_.cublas_Algo[1], arch_);
 
   dense_layer_kernel_launcher(inter_matmul_buf, param_.output_kernel,
                               transformer_out, m, k * param_.intermediate_size,
                               n, cublas_handle, stream, param_.cublas_Algo[2]);
-
+/*
   if (is_remove_padding_)
     add_bias_input_layernorm_restore_output_kernel_launcher(
         transformer_out, attr_matmul_buf, param_.output_bias,
@@ -127,7 +145,37 @@ void BertTransformer<OpType>::bert_infer(
         transformer_out, attr_matmul_buf, param_.output_bias,
         param_.output_layernorm_gamma, param_.output_layernorm_beta,
         batch_size * seq_len, n, hidden_dim, stream, use_fp32_);
+*/
+
+if (is_remove_padding_)
+    add_bias_residual_restore_output_kernel_launcher(
+        transformer_out, residual, param_.output_bias,
+        param_.output_layernorm_gamma, param_.output_layernorm_beta,
+        batch_size * seq_len, n, hidden_dim, stream, use_fp32_, inner_buf,
+        et_param.batch_idx, et_param.word_idx, seq_len);
+  else
+    add_bias_residual_kernel_launcher(
+        transformer_out, residual, param_.output_bias,
+        param_.output_layernorm_gamma, param_.output_layernorm_beta,
+        alpha, batch_size * seq_len, n, hidden_dim, stream, use_fp32_);
+
+    cudaFree(residual);
 }
+
+    // [xjm: change for the residual]
+    // if (is_remove_padding_)
+    //     add_bias_residual_restore_output_kernel_launcher(
+    //         transformer_out, from_tensor, param_.output_bias,
+    //         param_.output_layernorm_gamma, param_.output_layernorm_beta,
+    //         batch_size * seq_len, n, hidden_dim, stream, use_fp32_, inner_buf,
+    //         et_param.batch_idx, et_param.word_idx, seq_len);
+    // else
+    //     add_bias_residual_kernel_launcher(
+    //         transformer_out, from_tensor, param_.output_bias,
+    //         param_.output_layernorm_gamma, param_.output_layernorm_beta,
+    //         alpha, batch_size * seq_len, n, hidden_dim, stream, use_fp32_);
+    // }
+
 
 
 template void BertTransformer<OperationType::FP32>::bert_infer(

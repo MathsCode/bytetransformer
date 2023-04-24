@@ -60,9 +60,23 @@ void Attention<OpType>::nofused_infer(AttentionInferParam infer_param) {
         seq_len, head_num_, size_per_head_ / 2, is_roformer, et_param.batch_idx,
         et_param.word_idx);
   else
-    add_QKV_bias<<<grid, block, 0, stream>>>(
-        infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
-        seq_len, head_num_, size_per_head_ / 2, is_roformer);
+  {
+    // add_QKV_bias<<<grid, block, 0, stream>>>(
+    //     infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
+    //     seq_len, head_num_, size_per_head_ / 2, is_roformer);
+
+    // change for 4096
+    if (block.x <= 1024){
+      add_QKV_bias<<<grid, block, 0, stream>>>(
+          infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
+          seq_len, head_num_, size_per_head_ / 2, is_roformer);
+    }
+    else{
+      add_QKV_bias_large_dim<<<grid, dim3(512), 0, stream>>>(
+          infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
+          seq_len, head_num_, size_per_head_ / 2, is_roformer);
+    }
+  }
   grid.y = 1;
 
   DataType_ alpha =
@@ -107,9 +121,21 @@ void Attention<OpType>::nofused_infer(AttentionInferParam infer_param) {
           transpose_dst, infer_param.attention_output, batch_size, seq_len,
           head_num_, size_per_head_half, et_param.batch_idx, et_param.word_idx);
     else
-      transpose<<<batch_size * seq_len, block, 0, stream>>>(
+      // transpose<<<batch_size * seq_len, block, 0, stream>>>(
+      //     transpose_dst, infer_param.attention_output, batch_size, seq_len,
+          // head_num_, size_per_head_half);
+      {
+        if (block.x * block.y <= 1024){
+        transpose<<<batch_size * seq_len, block, 0, stream>>>(
           transpose_dst, infer_param.attention_output, batch_size, seq_len,
           head_num_, size_per_head_half);
+        }else{
+          block.x = 16;
+          transpose_large_dim<<<batch_size * seq_len, block, 0, stream>>>(
+            transpose_dst, infer_param.attention_output, batch_size, seq_len,
+            head_num_, size_per_head_half);
+        }
+      }
   }
 }
 

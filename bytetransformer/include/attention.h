@@ -44,7 +44,7 @@ class AttentionParam {
 
 template <typename T>
 struct AttentionInferParam {
-  const T *qkv;         // [batch_size, seq_len, hidden_dim * 3]
+  T *qkv;         // [batch_size, seq_len, hidden_dim * 3]
   const T *atten_mask;  // [batch_size, seq_len, seq_len], [1, 0]
   T *attention_output;  // [batch_size, seq_len, hidden_dim]
   void *buf;
@@ -122,20 +122,21 @@ class Attention {
   }
 
   virtual void infer(AttentionInferParam infer_param) {
-    if (use_fused_attention_) {
-      if (infer_param.seq_len <= 80) {
-        if (is_remove_padding_)
-          fused_rm_infer(infer_param);
-        else
-          fused_infer(infer_param);
-      } else {
-        if (is_remove_padding_)
-          fused_long_rm_infer(infer_param);
-        else
-          fused_long_infer(infer_param);
-      }
-    } else
-      nofused_infer(infer_param);
+    // if (use_fused_attention_) {
+    //   if (infer_param.seq_len <= 80) {
+    //     if (is_remove_padding_)
+    //       fused_rm_infer(infer_param);
+    //     else
+    //       fused_infer(infer_param);
+    //   } else {
+    //     if (is_remove_padding_)
+    //       fused_long_rm_infer(infer_param);
+    //     else
+    //       fused_long_infer(infer_param);
+    //   }
+    // } else
+    //   nofused_infer(infer_param);
+    nofused_infer(infer_param);
   }
 
   void nofused_infer(AttentionInferParam infer_param);

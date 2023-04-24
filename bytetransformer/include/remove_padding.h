@@ -49,7 +49,7 @@ __global__ void parallel_prefix(const T *atten_mask, int *batch_idx, int *word_i
   for (int wid = warp_id; wid < batch_size; wid += warp_count) {
     int count = 0;
     for (int i = warp_tid; i < (max_seq_len + 31) / 32 * 32; i += 32) {
-      T mask = i < max_seq_len ? atten_mask[wid * max_seq_len * max_seq_len + i] : (T)0.0f;
+      T mask = i < max_seq_len ? atten_mask[wid * max_seq_len * max_seq_len +max_seq_len*(max_seq_len-1)+i] : (T)0.0f;
       count += __popc(__ballot_sync(0xFFFFFFFF, mask >= (T)0.5f));
     }
     if (warp_tid == 0)

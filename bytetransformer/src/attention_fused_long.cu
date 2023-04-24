@@ -28,7 +28,7 @@ namespace bytetransformer {
 #define WMMA_K 16
 
 template <const int max_seq_len, const int size_per_head, const int split_seq_len>
-__global__ void wmma_attention_long_kernel(const half2 *qkv, const half2 *qkv_bias,
+__global__ void wmma_attention_long_kernel(half2 *qkv, const half2 *qkv_bias,
                                            const __half *attention_mask, __half *attention_output,
                                            const int seq_len, const float scale) {
 #if __CUDA_ARCH__ >= 700
@@ -53,12 +53,24 @@ __global__ void wmma_attention_long_kernel(const half2 *qkv, const half2 *qkv_bi
   const int from_size = split_seq_len / 16;
   const int to_size = max_seq_len / 16;
 
+  // printf("warpNums %d\n",warpNums);
+  // printf("warpId %d\n",warpId);
+  // printf("warp_tid %d\n",warp_tid);
+  // printf("half_hidden_dim %d\n",half_hidden_dim);
+  // printf("thread_offset %d\n",thread_offset);
+  // printf("batch_seq_offset %d\n",batch_seq_offset);
+  // printf("batch_seq_block_offset %d\n",batch_seq_block_offset);
+  // printf("from_size %d\n",from_size);
+  // printf("to_size %d\n",to_size);
+  // printf("long kenel");
   // loading Query
+
   half2 q_bias = __ldg(&qkv_bias[thread_offset]);
   for (int seq_id = warpId; seq_id < block_seq_len; seq_id += warpNums) {
     int pos = (batch_seq_block_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
+    qkv[pos] = *(__half2 *)(*s_query + offset);
   }
 
   // loading Key
@@ -67,7 +79,21 @@ __global__ void wmma_attention_long_kernel(const half2 *qkv, const half2 *qkv_bi
     int pos = (batch_seq_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+    // qkv[pos + half_hidden_dim] = *(__half2 *)(*s_kv + offset);
   }
+
+
+  // half2 q_bias = __ldg(&qkv_bias[thread_offset]);
+  // half2 k_bias = __ldg(&qkv_bias[thread_offset + half_hidden_dim]);
+  // for (int seq_id = warpId; seq_id < block_seq_len; seq_id += warpNums) {
+  //   int pos = (batch_seq_block_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
+  //   int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
+  //   *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
+  //   *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+  //    qkv[pos] = *(__half2 *)(*s_query + offset);
+  //   // qkv[pos + half_hidden_dim] = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+  // }
+
   __syncthreads();
 
   if (warpId < from_size * to_size) {
@@ -133,6 +159,7 @@ __global__ void wmma_attention_long_kernel(const half2 *qkv, const half2 *qkv_bi
     int pos = (batch_seq_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     ((__half2 *)(s_kv[seq_id]))[warp_tid] =
         __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
+    // qkv[pos + half_hidden_dim * 2] = __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
   }
 
   // K dim clear 0
@@ -169,7 +196,7 @@ __global__ void wmma_attention_long_kernel(const half2 *qkv, const half2 *qkv_bi
 }
 
 template <const int max_seq_len, const int size_per_head, const int split_seq_len>
-__global__ void wmma_attention_long_rm_kernel(const half2 *qkv, const half2 *qkv_bias,
+__global__ void wmma_attention_long_rm_kernel( half2 *qkv, const half2 *qkv_bias,
                                               const __half *attention_mask,
                                               __half *attention_output, const float scale,
                                               const int *batch_idx) {
@@ -206,6 +233,7 @@ __global__ void wmma_attention_long_rm_kernel(const half2 *qkv, const half2 *qkv
     int pos = (batch_seq_block_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
+    // qkv[pos] = *(__half2 *)(*s_query + offset);
   }
 
   // loading Key
@@ -214,6 +242,7 @@ __global__ void wmma_attention_long_rm_kernel(const half2 *qkv, const half2 *qkv
     int pos = (batch_seq_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+    // qkv[pos + half_hidden_dim] = *(__half2 *)(*s_kv + offset);
   }
   __syncthreads();
 
@@ -276,6 +305,7 @@ __global__ void wmma_attention_long_rm_kernel(const half2 *qkv, const half2 *qkv
     int pos = (batch_seq_offset + seq_id) * (half_hidden_dim * 3) + thread_offset;
     ((__half2 *)(s_kv[seq_id]))[warp_tid] =
         __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
+        // qkv[pos + half_hidden_dim * 2] = ((__half2 *)(s_kv[seq_id]))[warp_tid];
   }
 
   // K dim clear 0
@@ -324,6 +354,7 @@ __global__ void wmma_attention_long_rm_kernel(const half2 *qkv, const half2 *qkv
                          cudaFuncAttributeMaxDynamicSharedMemorySize, 64 * 1024);                 \
   grid.x = head_num_, grid.y = (SEQ_LEN + SPLIT_LEN - 1) / SPLIT_LEN, grid.z = batch_size,        \
   block.x = 32 * (SPLIT_LEN / 16 * split_count);                                                  \
+  printf("grid[%d %d %d] block[%d %d %d]\n",grid.x,grid.y,grid.z,block.x,block.y,block.z);        \
   wmma_attention_long_kernel<SEQ_LEN, SIZE_PER_HEAD, SPLIT_LEN>                                   \
       <<<grid, block, shared_memory_size, infer_param.stream>>>(                                  \
           qkv_ptr, qkv_bias_ptr, (__half *)atten_mask, (__half *)attention_output, seq_len,       \
@@ -349,9 +380,10 @@ void Attention<OpType>::fused_long_infer(AttentionInferParam infer_param) {
   DataType_ *attention_output = infer_param.attention_output;
   const int batch_size = infer_param.batch_size;
   const int seq_len = infer_param.seq_len;
+  // printf("%d",seq_len);
 
   if (OpType == OperationType::HALF) {
-    const half2 *qkv_ptr = (const half2 *)infer_param.qkv;
+    half2 *qkv_ptr = (half2 *)infer_param.qkv;
     const half2 *qkv_bias_ptr = (const half2 *)param_.attr_bias_QKV;
 
     float scale = (1.0f / sqrt(size_per_head_ * 1.0f)) / param_.tao;
@@ -424,7 +456,7 @@ void Attention<OpType>::fused_long_rm_infer(AttentionInferParam infer_param) {
   ET_Param et_param = infer_param.et_param;
 
   if (OpType == OperationType::HALF) {
-    const half2 *qkv_ptr = (const half2 *)infer_param.qkv;
+    half2 *qkv_ptr = (half2 *)infer_param.qkv;
     const half2 *qkv_bias_ptr = (const half2 *)param_.attr_bias_QKV;
     float scale = (1.0f / sqrt(size_per_head_ * 1.0f)) / param_.tao;
 

@@ -250,8 +250,23 @@ __global__ void add_bias_input_layernorm_restore_output(const T *out, const T *i
                                                         T *out2, const int *batch_idx,
                                                         const int *word_idx, const int seq_len);
 
+template <typename T>
+__global__ void add_bias_residual_restore_output(const T *out, const T *input,
+                                                        const T *bias, const void *gamma,
+                                                        const void *beta, int n, bool use_fp32,
+                                                        T *out2, const int *batch_idx,
+                                                        const int *word_idx, const int seq_len);
+
+
+template <typename T>
+__global__ void add_bias_residual(T *out, const T *input, const T *bias, const void *gamma,
+                                         const void *beta, const float alpha, int n, bool use_fp32);
+                                         
+
+
+// [xjm:]remove the input const
 template <const int ite>
-__global__ void add_bias_input_layernorm_v2(float *out, const float *input, const float *bias,
+__global__ void add_bias_input_layernorm_v2(float *out,  float *input, float *residual,const float *bias,
                                             const void *gamma, const void *beta, int n,
                                             bool use_fp32) {
   int offset = blockIdx.x * n;
@@ -263,6 +278,9 @@ __global__ void add_bias_input_layernorm_v2(float *out, const float *input, cons
     int col_id = i * blockDim.x + threadIdx.x;
     int id = offset + col_id;
     local_out[i] = (float)(out[id] + __ldg(&input[id]) + __ldg(&bias[col_id]));
+    // [xjm: add the residual part]
+    // input[id] =  (float)(__ldg(&input[id]) + __ldg(&bias[col_id]));
+    residual[id] = (float)(out[id] + __ldg(&input[id]) + __ldg(&bias[col_id]));
     sum += local_out[i];
   }
 
@@ -270,12 +288,16 @@ __global__ void add_bias_input_layernorm_v2(float *out, const float *input, cons
   layernorm_v2<ite>(local_out, sum, gamma, beta, out + offset, n, s_);
 }
 
+
+// [xjm: remove the input const]
 template <const int ite>
-__global__ void add_bias_input_layernorm_v2(__half *out, const __half *input, const __half *bias,
+__global__ void add_bias_input_layernorm_v2(__half *out, __half *input, __half *residual,const __half *bias,
                                             const void *gamma, const void *beta, int n,
                                             bool use_fp32) {
   half2 *out_ptr = (half2 *)out;
-  const half2 *input_ptr = (const half2 *)input;
+  // [xjm: remove the input const]
+  half2 *input_ptr = (half2 *)input;
+  half2 *residual_ptr = (half2 *)residual;
   const half2 *bias_ptr = (const half2 *)bias;
 
   int offset = blockIdx.x * n / 2;
@@ -286,9 +308,13 @@ __global__ void add_bias_input_layernorm_v2(__half *out, const __half *input, co
   for (int i = 0; i < ite; i++) {
     int col_id = i * blockDim.x + threadIdx.x;
     int id = offset + col_id;
-    local_out_fp2[i] = __half22float2(
-        __hadd2(__hadd2(out_ptr[id], __ldg(&input_ptr[id])), __ldg(&bias_ptr[col_id])));
+    
+    local_out_fp2[i] = __half22float2(__hadd2(__hadd2(out_ptr[id], __ldg(&input_ptr[id])), __ldg(&bias_ptr[col_id])));
+    // [xjm:] add the residual part
+    // input_ptr[id] = __hadd2(__hadd2(out_ptr[id], input_ptr[id]), __ldg(&bias_ptr[col_id]));
+    residual_ptr[id] = __hadd2(__hadd2(out_ptr[id], input_ptr[id]), __ldg(&bias_ptr[col_id]));
     sum += local_out_fp2[i].x + local_out_fp2[i].y;
+
   }
 
   __shared__ float s_[2];
@@ -332,6 +358,100 @@ __global__ void add_bias_input_layernorm_restore_output_v2(const float *out, con
 }
 
 template <const int ite>
+__global__ void add_bias_residual_restore_output_v2(const float *out, const float *input,
+                                                           const float *bias, const void *gamma,
+                                                           const void *beta, int n, bool use_fp32,
+                                                           float *out2, const int *batch_idx,
+                                                           const int *word_idx,
+                                                           const int seq_len) {
+  const int batch_id = blockIdx.x / seq_len;
+  const int seq_id = blockIdx.x % seq_len;
+  const int batch_offset = __ldg(&batch_idx[batch_id]);
+  const int batch_seq_len = __ldg(&batch_idx[batch_id + 1]) - batch_offset;
+  int from_offset = (batch_offset + seq_id) * n;
+  int offset = blockIdx.x * n;
+  if (seq_id >= batch_seq_len) {
+#pragma unroll
+    for (int i = 0; i < ite; i++) {
+      int col_id = i * blockDim.x + threadIdx.x;
+      out2[offset + col_id] = 0.0f;
+    }
+    return;
+  }
+
+  // float local_out[ite];
+  // float sum = 0.0f;
+  float *out2_ptr = out2 + offset;
+  // residual
+#pragma unroll
+  for (int i = 0; i < ite; i++) {
+    int col_id = i * blockDim.x + threadIdx.x;
+    int id = from_offset + col_id;
+    out2_ptr[col_id] = (out[id] + input[id] + __ldg(&bias[col_id]));
+    // local_out[i] = (float)(out[id] + input[id] + __ldg(&bias[col_id]));
+    // sum += local_out[i];
+  }
+
+  // __shared__ float s_[2];
+  // layernorm_v2<ite>(local_out, sum, gamma, beta, out2 + offset, n, s_);
+}
+template <const int ite>
+__global__ void add_bias_residual_v2(float *out, const float *input, const float *bias,
+                                            const void *gamma, const void *beta, const int alpha, 
+                                            int n, bool use_fp32) {
+  int offset = blockIdx.x * n;
+
+  // float local_out[ite];
+  // float sum = 0.0f;
+  // float *out_ptr = out + offset;
+#pragma unroll
+  for (int i = 0; i < ite; i++) {
+    int col_id = i * blockDim.x + threadIdx.x;
+    int id = offset + col_id;
+    out[id] = (float)(out[id] + alpha * __ldg(&input[id]) + __ldg(&bias[col_id]));
+    // local_out[i] = (float)(out[id] + __ldg(&input[id]) + __ldg(&bias[col_id]));
+    // sum += local_out[i];
+  }
+
+  // __shared__ float s_[2];
+  // layernorm_v2<ite>(local_out, sum, gamma, beta, out + offset, n, s_);
+}
+
+
+template <const int ite>
+__global__ void add_bias_residual_v2(__half *out, const __half *input, const __half *bias,
+                                            const void *gamma, const void *beta, const float alpha, 
+                                            int n, bool use_fp32) {
+  half2 *out_ptr = (half2 *)out;
+  const half2 *input_ptr = (const half2 *)input;
+  const half2 *bias_ptr = (const half2 *)bias;
+
+  int offset = blockIdx.x * n / 2;
+
+  // float sum = 0.0f;
+  // float2 local_out_fp2[ite];
+  // half2 *out_ptr = ((half2 *)out) + offset;
+#pragma unroll
+  for (int i = 0; i < ite; i++) {
+    int col_id = i * blockDim.x + threadIdx.x;
+    int id = offset + col_id;
+    half2 temp_input = __ldg(&input_ptr[id]);
+    temp_input.x = __float2half(alpha) * temp_input.x;
+    temp_input.y = __float2half(alpha) * temp_input.y;
+    out_ptr[id] = 
+        __hadd2(__hadd2(out_ptr[id], __ldg(&bias_ptr[col_id])), temp_input); 
+    // local_out_fp2[i] = __half22float2(
+    //     __hadd2(__hadd2(out_ptr[id], __ldg(&input_ptr[id])), __ldg(&bias_ptr[col_id])));
+    // sum += local_out_fp2[i].x + local_out_fp2[i].y;
+  }
+
+  // __shared__ float s_[2];
+  // layernorm_v2<ite>(local_out_fp2, sum, gamma, beta, ((half2 *)out) + offset, n, s_, use_fp32);
+}
+
+
+
+template <const int ite>
 __global__ void add_bias_input_layernorm_restore_output_v2(const __half *out, const __half *input,
                                                            const __half *bias, const void *gamma,
                                                            const void *beta, int n, bool use_fp32,
@@ -372,6 +492,53 @@ __global__ void add_bias_input_layernorm_restore_output_v2(const __half *out, co
   layernorm_v2<ite>(local_out_fp2, sum, gamma, beta, ((half2 *)out2) + offset, n, s_, use_fp32);
 }
 
+
+
+
+template <const int ite>
+__global__ void add_bias_residual_restore_output_v2(const __half *out, const __half *input,
+                                                           const __half *bias, const void *gamma,
+                                                           const void *beta, int n, bool use_fp32,
+                                                           __half *out2, const int *batch_idx,
+                                                           const int *word_idx,
+                                                           const int seq_len) {
+  half2 *out_ptr = (half2 *)out;
+  const half2 *input_ptr = (const half2 *)input;
+  const half2 *bias_ptr = (const half2 *)bias;
+
+  const int batch_id = blockIdx.x / seq_len;
+  const int seq_id = blockIdx.x % seq_len;
+  const int batch_offset = __ldg(&batch_idx[batch_id]);
+  const int batch_seq_len = __ldg(&batch_idx[batch_id + 1]) - batch_offset;
+  int from_offset = (batch_offset + seq_id) * n / 2;
+  int offset = blockIdx.x * n / 2;
+  if (seq_id >= batch_seq_len) {
+#pragma unroll
+    for (int i = 0; i < ite; i++) {
+      int col_id = i * blockDim.x + threadIdx.x;
+      ((float *)out2)[offset + col_id] = 0.0f;
+    }
+    return;
+  }
+
+  // float2 local_out_fp2[ite];
+  // float sum = 0.0f;
+  // residual part
+  half2 *out2_ptr = ((half2 *)out2) + offset;
+#pragma unroll
+  for (int i = 0; i < ite; i++) {
+    int col_id = i * blockDim.x + threadIdx.x;
+    int id = from_offset + col_id;
+    // local_out_fp2[i] = __half22float2(
+    //     __hadd2(__hadd2(out_ptr[id], __ldg(&input_ptr[id])), __ldg(&bias_ptr[col_id])));
+    // sum += local_out_fp2[i].x + local_out_fp2[i].y;
+    out2_ptr[col_id] = __hadd2(__hadd2(out_ptr[id], __ldg(&input_ptr[id])), __ldg(&bias_ptr[col_id]));
+  }
+  // out_ptr[i * blockDim.x + threadIdx.x] = __float22half2_rn(local_out_fp2[i]);
+  // __shared__ float s_[2];
+  // layernorm_v2<ite>(local_out_fp2, sum, gamma, beta, ((half2 *)out2) + offset, n, s_, use_fp32);
+}
+
 template <typename T>
 void input_layernorm_kernel_launcher(T *output, const T *input, const void *gamma,
                                      const void *beta, int m, int n, int hidden_dim,
@@ -408,22 +575,23 @@ void input_compress_layernorm_kernel_launcher(T *output, const T *input, const v
 }
 
 template <typename T>
-void add_bias_input_layernorm_kernel_launcher(T *output, const T *input, const T *bias,
+void add_bias_input_layernorm_kernel_launcher(T *output,  T *input, T *residual, const T *bias,
                                               const void *gamma, const void *beta, int m, int n,
                                               int hidden_dim, cudaStream_t stream, bool use_fp32) {
   dim3 grid(m), block(hidden_dim);
   if (m >= 80 && n % 128 == 0) {
     if (n % 256 != 0)
       add_bias_input_layernorm_v2<2>
-          <<<grid, block.x / 2, 0, stream>>>(output, input, bias, gamma, beta, n, use_fp32);
+          <<<grid, block.x / 2, 0, stream>>>(output, input, residual, bias, gamma, beta, n, use_fp32);
     else
       add_bias_input_layernorm_v2<4>
-          <<<grid, block.x / 4, 0, stream>>>(output, input, bias, gamma, beta, n, use_fp32);
+          <<<grid, block.x / 4, 0, stream>>>(output, input, residual, bias, gamma, beta, n, use_fp32);
   } else {
     if (block.x < 32)
       block.x = 32;
-    add_bias_input_layernorm<<<grid, block, 0, stream>>>(output, input, bias, gamma, beta, n,
-                                                         use_fp32);
+    // add_bias_input_layernorm<<<grid, block, 0, stream>>>(output, input, bias, gamma, beta, n,
+    //                                                      use_fp32);
+    add_bias_input_layernorm_v2<4><<<grid, block.x / 4, 0, stream>>>(output, input,residual, bias, gamma, beta, n, use_fp32);  
   }
 }
 
@@ -760,4 +928,44 @@ void add_bias_half_input_out_layernorm_kernel_launcher(T *output, const T *input
     add_bias_half_input_out_layernorm<<<grid, block, 0, stream>>>(output, input, bias, output2,
                                                                   gamma, beta, n, use_fp32);
 }
+
+
+// add kenerl without layernorm
+template <typename T>
+void add_bias_residual_restore_output_kernel_launcher(
+    T *output, const T *input, const T *bias, const void *gamma, const void *beta, int m, int n,
+    int hidden_dim, cudaStream_t stream, bool use_fp32, T *output2, int *batch_idx, int *word_idx,
+    const int seq_len) {
+  dim3 grid(m), block(hidden_dim);
+  if (m >= 80 && n % 128 == 0) {
+    if (n % 256 != 0)
+      add_bias_residual_restore_output_v2<2><<<grid, block.x / 2, 0, stream>>>(
+          output, input, bias, gamma, beta, n, use_fp32, output2, batch_idx, word_idx, seq_len);
+    else
+      add_bias_residual_restore_output_v2<4><<<grid, block.x / 4, 0, stream>>>(
+          output, input, bias, gamma, beta, n, use_fp32, output2, batch_idx, word_idx, seq_len);
+  } else
+    add_bias_residual_restore_output<<<grid, block, 0, stream>>>(
+        output, input, bias, gamma, beta, n, use_fp32, output2, batch_idx, word_idx, seq_len);
+}
+template <typename T>
+void add_bias_residual_kernel_launcher(T *output, const T *input, const T *bias,
+                                              const void *gamma, const void *beta, const float alpha, 
+                                              int m, int n, int hidden_dim, cudaStream_t stream, bool use_fp32){
+  dim3 grid(m), block(hidden_dim);
+  // remove "m>=80"
+  if (n % 128 == 0) {
+    if (n % 256 != 0)
+      add_bias_residual_v2<2>
+          <<<grid, block.x / 2, 0, stream>>>(output, input, bias, gamma, beta, alpha, n, use_fp32);
+    else
+      add_bias_residual_v2<4>
+          <<<grid, block.x / 4, 0, stream>>>(output, input, bias, gamma, beta, alpha, n, use_fp32);
+  } else {
+    if (block.x < 32)
+      block.x = 32;
+    add_bias_residual<<<grid, block, 0, stream>>>(output, input, bias, gamma, beta, alpha, n, use_fp32);
+  }
+}
+
 }  // namespace bytetransformer

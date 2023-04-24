@@ -33,7 +33,7 @@ template <const int max_seq_len, const int size_per_head>
 __global__
     // __launch_bounds__(512,4)//THREADS_PER_BLOCK
     void
-    wmma_attention_kernel_16(const half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
+    wmma_attention_kernel_16(half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
                              __half *attention_output, const int seq_len, const float scale) {
 #if __CUDA_ARCH__ >= 700
   using namespace nvcuda;
@@ -61,6 +61,8 @@ __global__
     int offset = seq_id * (size_per_head + SKEW_HALF) + (quart_warp_tid << 1);
     *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
     *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+    qkv[pos] = __hadd2(__ldg(&qkv[pos]), q_bias);
+    qkv[pos + half_hidden_dim] = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
   }
 
   __syncthreads();
@@ -130,6 +132,7 @@ __global__
     int pos = (batch_seq_offset + seq_id) * (half_hidden_dim * 3) + quart_thread_offset;
     ((__half2 *)(s_kv[seq_id]))[quart_warp_tid] =
         __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
+    qkv[pos + half_hidden_dim * 2] =  __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
   }
 
   // K dim clear 0
@@ -169,7 +172,7 @@ template <const int max_seq_len, const int size_per_head>
 __global__
     // __launch_bounds__(512,4)//THREADS_PER_BLOCK
     void
-    wmma_attention_kernel(const half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
+    wmma_attention_kernel( half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
                           __half *attention_output, const int seq_len, const float scale) {
 #if __CUDA_ARCH__ >= 700
   using namespace nvcuda;
@@ -194,6 +197,8 @@ __global__
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
     *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+    qkv[pos] = __hadd2(__ldg(&qkv[pos]), q_bias);
+    qkv[pos+half_hidden_dim] = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
   }
   __syncthreads();
 
@@ -257,6 +262,7 @@ __global__
     int pos = (batch_seq_offset + from_id) * (half_hidden_dim * 3) + thread_offset;
     ((__half2 *)(s_kv[from_id]))[warp_tid] =
         __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
+      qkv[pos + half_hidden_dim * 2] = __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
   }
 
   // K dim clear 0
@@ -296,7 +302,7 @@ template <const int max_seq_len, const int size_per_head>
 __global__
     // __launch_bounds__(512,4)//THREADS_PER_BLOCK
     void
-    wmma_attention_rm_kernel(const half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
+    wmma_attention_rm_kernel(half2 *qkv, const half2 *qkv_bias, const __half *attention_mask,
                              __half *attention_output, const float scale, const int *batch_idx) {
 #if __CUDA_ARCH__ >= 700
   using namespace nvcuda;
@@ -322,6 +328,8 @@ __global__
     int offset = seq_id * (size_per_head + SKEW_HALF) + (warp_tid << 1);
     *(__half2 *)(*s_query + offset) = __hadd2(__ldg(&qkv[pos]), q_bias);
     *(__half2 *)(*s_kv + offset) = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
+    qkv[pos] = __hadd2(__ldg(&qkv[pos]), q_bias);
+    qkv[pos + half_hidden_dim] = __hadd2(__ldg(&qkv[pos + half_hidden_dim]), k_bias);
   }
   __syncthreads();
 
@@ -378,6 +386,7 @@ __global__
     int pos = (batch_offset + from_id) * (half_hidden_dim * 3) + thread_offset;
     ((__half2 *)(s_kv[from_id]))[warp_tid] =
         __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
+        qkv[pos + half_hidden_dim * 2] = __hadd2(__ldg(&qkv[pos + half_hidden_dim * 2]), v_bias);
   }
 
   // K dim clear 0
@@ -436,7 +445,7 @@ void Attention<OpType>::fused_infer(AttentionInferParam infer_param) {
   dim3 grid(head_num_, batch_size), block;
 
   if (OpType == OperationType::HALF) {
-    const half2 *qkv_ptr = (const half2 *)infer_param.qkv;
+    half2 *qkv_ptr = (half2 *)infer_param.qkv;
     const half2 *qkv_bias_ptr = (const half2 *)param_.attr_bias_QKV;
     float scale = (1.0f / sqrt(size_per_head_ * 1.0f)) / param_.tao;
 
@@ -470,7 +479,7 @@ void Attention<OpType>::fused_rm_infer(AttentionInferParam infer_param) {
   dim3 grid(head_num_, batch_size), block;
 
   if (OpType == OperationType::HALF) {
-    const half2 *qkv_ptr = (const half2 *)infer_param.qkv;
+    half2 *qkv_ptr = (half2 *)infer_param.qkv;
     const half2 *qkv_bias_ptr = (const half2 *)param_.attr_bias_QKV;
     float scale = 1.0f / sqrt(size_per_head_ * 1.0f) / param_.tao;
 

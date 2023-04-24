@@ -110,7 +110,11 @@ if __name__ == "__main__":
     output_layernorm_gamma      = [set_dtype(torch.empty(hidden_dim).uniform_(-0.4, 0.4).cuda(), dtype) for _ in range(n_layers)]
     output_layernorm_beta       = [set_dtype(torch.empty(hidden_dim).uniform_(-0.4, 0.4).cuda(), dtype) for _ in range(n_layers)]
     from_tensor                 = set_dtype(torch.empty(batch_size, seqlen, hidden_dim).uniform_(-0.4, 0.4).cuda(), dtype)
-
+    idx = torch.arange(seqlen).cuda()
+    causal_mask = (idx <= idx.view(seqlen, 1)).view(seqlen, seqlen)
+    attention_mask = (torch.arange(seqlen).cuda() >= seqlen/2)
+    mask = attention_mask.view(batch_size, 1, seqlen) & causal_mask
+    print(mask)
     attr_mask                   = set_dtype(torch.tile(seqlen_mask, dims=(seqlen,)).reshape(batch_size, seqlen, seqlen).cuda(), dtype)
     # autopep8: on
     is_remove_padding = True
@@ -143,17 +147,18 @@ if __name__ == "__main__":
             hidden_states = torch.matmul(hidden_states, attr_output_kernel[layer]) + attr_output_bias[layer]
 
             hidden_states = hidden_states + input_tensor
+            residual = hidden_states
             hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
                                          weight=attr_output_layernorm_gamma[layer], bias=attr_output_layernorm_beta[layer])
-            residual = hidden_states
+            # residual = hidden_states
 
             hidden_states = torch.matmul(hidden_states, inter_kernel[layer]) + inter_bias[layer]
-            hidden_states = F.gelu(hidden_states)
+            hidden_states = F.relu(hidden_states)
             hidden_states = torch.matmul(hidden_states, output_kernel[layer]) + output_bias[layer]
 
             hidden_states = hidden_states + residual
-            hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
-                                         weight=output_layernorm_gamma[layer], bias=output_layernorm_beta[layer])
+            # hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
+            #                              weight=output_layernorm_gamma[layer], bias=output_layernorm_beta[layer])
 
             transformer_output[layer] = hidden_states
 
@@ -189,7 +194,7 @@ if __name__ == "__main__":
             hidden_states = from_tensor
 
             for layer in range(n_layers):
-                hidden_states = torch.ops.ByteTransformer.BertTransformer(
+                hidden_states,new_qkv = torch.ops.ByteTransformer.BertTransformer(
                     head_num, head_size,
                     qkv_kernel[layer], qkv_bias[layer],
                     attr_output_kernel[layer], attr_output_bias[layer],
@@ -200,9 +205,13 @@ if __name__ == "__main__":
                     is_remove_padding, use_fused_attention)
 
             output = hidden_states
+            output_qkv = new_qkv.reshape(batch_size,seqlen,hidden_dim*3)
 
         t1 = timeit.default_timer()
         masked_output = transformer_output[-1]
         masked_output = masked_output * set_dtype(seqlen_mask.unsqueeze(-1).cuda(), dtype)
-        print("max diff:", torch.max(torch.abs(masked_output - output)).cpu())
+        print("max diff qkv:", torch.max(torch.abs(output_qkv - qkv)).cpu())
+        print("diff num qkv:", torch.sum(torch.abs((output_qkv - qkv) / output_qkv) > 1e-2).cpu())
+        print("max diff output:", torch.max(torch.abs(masked_output - output)).cpu())
+        print("diff num output:", torch.sum(torch.abs((masked_output - output) / output) > 1e-2).cpu())
         print("time costs:    {:.2f} ms".format((t1 - t0) * 1000 / iters))

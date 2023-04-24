@@ -86,12 +86,28 @@ struct GELUFAST {
   }
 };
 
+// RELUFAST operator
+template <typename T>
+struct RELUFAST {
+  __device__ T operator()(T const &scalar_t) const {
+    float scalar = static_cast<float>(scalar_t);
+    return T(scalar > 0.0f ? scalar : 0.0f);
+  }
+};
+
 template <>
 struct GELUFAST<float> {
   __device__ float operator()(float const &scalar) const {
     return 0.5f * scalar *
            (1.0f +
             fast_tanh(0.7978845608028654f * (scalar + 0.044715f * scalar * scalar * scalar)));
+  }
+};
+
+template <>
+struct RELUFAST<float> {
+  __device__ float operator()(float const &scalar) const { 
+    return scalar > 0.0f ? scalar : 0.0f; 
   }
 };
 
@@ -103,6 +119,18 @@ struct GELUFAST<Array<T, N>> {
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < int(rhs.size()); ++i)
       y[i] = gelu_op(rhs[i]);
+    return y;
+  }
+};
+
+template <typename T, int N>
+struct RELUFAST<Array<T, N>> {
+  __device__ Array<T, N> operator()(Array<T, N> const &rhs) const {
+    Array<T, N> y;
+    RELUFAST<T> relu_op;
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < int(rhs.size()); ++i)
+      y[i] = relu_op(rhs[i]);
     return y;
   }
 };
@@ -231,6 +259,128 @@ class LinearCombinationGELUFAST {
   }
 };
 
+template <typename ElementOutput_,  ///< Data type used to load and store tensors
+          int Count,                ///< Number of elements computed per operation
+          typename ElementAccumulator_ = ElementOutput_,  ///< Accumulator data type
+          typename ElementCompute_ =
+              ElementOutput_,  ///< Data type used to compute linear combination
+          FloatRoundStyle Round = FloatRoundStyle::round_to_nearest>
+class LinearCombinationRELUFAST {
+ public:
+  using ElementOutput = ElementOutput_;
+  using ElementAccumulator = ElementAccumulator_;
+  using ElementCompute = ElementCompute_;
+
+  static int const kCount = Count;
+  using FragmentOutput = Array<ElementOutput, kCount>;
+  using FragmentAccumulator = Array<ElementAccumulator, kCount>;
+  using ComputeFragment = Array<ElementCompute, kCount>;
+
+  static FloatRoundStyle const kRound = Round;
+
+  /// Host-constructable parameters structure
+  struct Params {
+    ElementCompute alpha;  ///< scales accumulators
+    ElementCompute beta;   ///< scales source tensor
+    ElementCompute const
+        *alpha_ptr;  ///< pointer to accumulator scalar - if not null, loads it from memory
+    ElementCompute const
+        *beta_ptr;  ///< pointer to source scalar - if not null, loads it from memory
+
+    // Methods
+    CUTLASS_HOST_DEVICE
+    Params()
+        : alpha(ElementCompute(1)),
+          beta(ElementCompute(0)),
+          alpha_ptr(nullptr),
+          beta_ptr(nullptr) {
+    }
+
+    CUTLASS_HOST_DEVICE
+    Params(ElementCompute alpha, ElementCompute beta)
+        : alpha(alpha), beta(beta), alpha_ptr(nullptr), beta_ptr(nullptr) {
+    }
+
+    CUTLASS_HOST_DEVICE
+    Params(ElementCompute const *alpha_ptr, ElementCompute const *beta_ptr)
+        : alpha(0), beta(0), alpha_ptr(alpha_ptr), beta_ptr(beta_ptr) {
+    }
+  };
+
+ private:
+  ElementCompute alpha_, beta_;
+
+ public:
+  /// Constructs the function object, possibly loading from pointers in host memory
+  CUTLASS_HOST_DEVICE
+  LinearCombinationRELUFAST(Params const &params) {
+    alpha_ = (params.alpha_ptr ? *params.alpha_ptr : params.alpha);
+    beta_ = (params.beta_ptr ? *params.beta_ptr : params.beta);
+  }
+
+  /// Returns true if source is needed
+  CUTLASS_HOST_DEVICE
+  bool is_source_needed() const {
+    return beta_ != ElementCompute(0);
+  }
+
+  /// Functionally required for serial reduction in the epilogue
+  CUTLASS_HOST_DEVICE
+  void set_k_partition(int k_partition, int k_partition_count) {
+    CUTLASS_UNUSED(k_partition_count);
+    if (k_partition)
+      beta_ = ElementCompute(1);
+  }
+
+  /// Computes: D = relu( alpha * accumulator + beta * source )
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(FragmentAccumulator const &accumulator,
+                            FragmentOutput const &source) const {
+    // Convert source to interal compute numeric type
+    NumericArrayConverter<ElementCompute, ElementOutput, kCount, Round> source_converter;
+    ComputeFragment converted_source = source_converter(source);
+
+    NumericArrayConverter<ElementCompute, ElementAccumulator, kCount, Round> accumulator_converter;
+    ComputeFragment converted_accumulator = accumulator_converter(accumulator);
+
+    // Perform binary operations
+    multiplies<ComputeFragment> mul_add_source;
+    ComputeFragment intermediate =
+        mul_add_source(beta_, converted_source);  // X = beta * C + uniform
+
+    multiply_add<ComputeFragment> mul_add_accumulator;
+    intermediate =
+        mul_add_accumulator(alpha_, converted_accumulator, intermediate);  // D = alpha * Accum + X
+
+    RELUFAST<ComputeFragment> relu;
+    intermediate = relu(intermediate);
+
+    // Convert to destination numeric type
+    NumericArrayConverter<ElementOutput, ElementCompute, kCount, Round> destination_converter;
+    return destination_converter(intermediate);
+  }
+
+  /// Computes: D = relu( alpha * accumulator )
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(FragmentAccumulator const &accumulator) const {
+    // Convert source to interal compute numeric type
+    NumericArrayConverter<ElementCompute, ElementAccumulator, kCount, Round> accumulator_converter;
+    ComputeFragment converted_accumulator = accumulator_converter(accumulator);
+
+    // Perform binary operations
+    multiplies<ComputeFragment> mul_add_accumulator;
+    ComputeFragment intermediate =
+        mul_add_accumulator(alpha_, converted_accumulator);  // D = alpha * Accum
+
+    RELUFAST<ComputeFragment> relu;
+    intermediate = relu(intermediate);
+
+    // Convert to destination numeric type
+    NumericArrayConverter<ElementOutput, ElementCompute, kCount, Round> destination_converter;
+    return destination_converter(intermediate);
+  }
+};
+
 }  // namespace thread
 }  // namespace epilogue
 }  // namespace cutlass
@@ -247,7 +397,7 @@ using LayoutOutput = cutlass::layout::RowMajor;     // m*n row-major == n*m col-
 using MMAOp = cutlass::arch::OpClassTensorOp;
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
 
-using EpilogueOp = cutlass::epilogue::thread::LinearCombinationGELUFAST<
+using ReLUEpilogueOp = cutlass::epilogue::thread::LinearCombinationRELUFAST<
     ElementOutput,                                     // <- data type of output matrix
     128 / cutlass::sizeof_bits<ElementOutput>::value,  // <- the number of elements per vectorized
                                                        // memory access. For a byte, it's 16
@@ -255,6 +405,8 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombinationGELUFAST<
                                                        // of math instructions in the epilogue too.
     ElementAccumulator,                                // <- data type of accumulator
     ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
+
+
 
 #define _block_m 128
 #define _block_n 128
@@ -276,10 +428,13 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombinationGELUFAST<
                                   ElementOutput, LayoutOutput, ElementAccumulator, MMAOp, SmArch,                  \
                                   ShapeMMAThreadBlock_##BLOCK_M##_##BLOCK_N##_##BLOCK_K,                           \
                                   ShapeMMAWarp_##WARP_M##_##WARP_N##_##WARP_K,                                     \
-                                  ShapeMMAOp_##INST_M##_##INST_N##_##INST_K, EpilogueOp,                           \
+                                  ShapeMMAOp_##INST_M##_##INST_N##_##INST_K, ReLUEpilogueOp,                           \
                                   SwizzleThreadBlock, NUM_STAGES>;
 
 #define GEMM_BIAS_GELU(BLOCK_M, BLOCK_N, BLOCK_K, WARP_M, WARP_N, WARP_K, INST_M, INST_N, INST_K) \
+  Gemm_##BLOCK_M##_##BLOCK_N##_##BLOCK_K##_##WARP_M##_##WARP_N##_##WARP_K##_##INST_M##_##INST_N##_##INST_K
+
+#define GEMM_BIAS_RELU(BLOCK_M, BLOCK_N, BLOCK_K, WARP_M, WARP_N, WARP_K, INST_M, INST_N, INST_K) \
   Gemm_##BLOCK_M##_##BLOCK_N##_##BLOCK_K##_##WARP_M##_##WARP_N##_##WARP_K##_##INST_M##_##INST_N##_##INST_K
 
 #define GEMM_INIT(BLOCK_M, BLOCK_N, BLOCK_K, WARP_M, WARP_N, WARP_K, INST_M, INST_N, INST_K)                          \
@@ -312,6 +467,11 @@ __inline__ __device__ T gelu(T x) {
   return x * cdf;
 }
 
+template <typename T>
+__inline__ __device__ T relu(T x) {
+  return x > T(0) ? x : T(0);
+}
+
 template <>
 __inline__ __device__ half2 gelu(half2 val) {
   half2 val_pow3 = __hmul2(val, __hmul2(val, val));
@@ -328,6 +488,11 @@ __inline__ __device__ half2 gelu(half2 val) {
   return __hmul2(val, __float22half2_rn(tmp));
 }
 
+template <>
+__inline__ __device__ half2 relu(half2 val) {
+  return half2(val.x > half(0) ? val.x : half(0), val.y > half(0) ? val.y : half(0));
+}
+
 template <ActType act, typename T>
 __global__ void add_bias_act(T *output, const T *bias, const int M, const int N) {
   int row_offset = blockIdx.x * N;
@@ -340,6 +505,9 @@ __global__ void add_bias_act(T *output, const T *bias, const int M, const int N)
 
 template <typename T>
 __global__ void add_bias_gelu(T *output, const T *bias, const int M, const int N);
+
+template <typename T>
+__global__ void add_bias_relu(T *output, const T *bias, const int M, const int N);
 
 template <typename T>
 void gemm_bias_gelu(const T *A_, const T *B_, T *C_, const T *bias_, int m_, int k_, int n_,

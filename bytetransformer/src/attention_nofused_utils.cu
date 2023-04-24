@@ -21,7 +21,7 @@
 
 namespace bytetransformer {
 template <>
-__global__ void add_QKV_bias<float>(const float *QKV, const float *bias_QKV, float *q_buf,
+__global__ void add_QKV_bias<float>( float *QKV, const float *bias_QKV, float *q_buf,
                                     float *k_buf, float *v_buf, const int batch_size,
                                     const int seq_len, const int head_num,
                                     const int half_size_per_head, const bool is_roformer) {
@@ -40,6 +40,9 @@ __global__ void add_QKV_bias<float>(const float *QKV, const float *bias_QKV, flo
   q_value.x += q_bias.x, q_value.y += q_bias.y;
   k_value.x += k_bias.x, k_value.y += k_bias.y;
   v_value.x += v_bias.x, v_value.y += v_bias.y;
+  ((float2 *)QKV)[src_id] = q_value;
+  ((float2 *)QKV)[src_id + blockDim.x] = k_value;
+  ((float2 *)QKV)[src_id + blockDim.x * 2] = v_value;
 
   if (is_roformer) {
     float2 ro_q = make_float2(-q_value.y, q_value.x);
@@ -59,7 +62,7 @@ __global__ void add_QKV_bias<float>(const float *QKV, const float *bias_QKV, flo
 }
 
 template <>
-__global__ void add_QKV_bias<__half>(const __half *QKV, const __half *bias_QKV, __half *q_buf,
+__global__ void add_QKV_bias<__half>( __half *QKV, const __half *bias_QKV, __half *q_buf,
                                      __half *k_buf, __half *v_buf, const int batch_size,
                                      const int seq_len, const int head_num,
                                      const int half_size_per_head, const bool is_roformer) {
@@ -70,12 +73,14 @@ __global__ void add_QKV_bias<__half>(const __half *QKV, const __half *bias_QKV, 
   int src_id = (blockIdx.y * gridDim.x + blockIdx.x) * (blockDim.x * 3) + threadIdx.x;
   int trt_id = ((head_id * batch_size + batch_id) * seq_len + seq_id) * half_size_per_head + id;
   half2 q_value =
-      __hadd2(((const half2 *)QKV)[src_id], __ldg(&((const half2 *)bias_QKV)[threadIdx.x]));
-  half2 k_value = __hadd2(((const half2 *)QKV)[src_id + blockDim.x],
+      __hadd2(((half2 *)QKV)[src_id], __ldg(&((const half2 *)bias_QKV)[threadIdx.x]));
+  half2 k_value = __hadd2(((half2 *)QKV)[src_id + blockDim.x],
                           __ldg(&((const half2 *)bias_QKV)[threadIdx.x + blockDim.x]));
-  half2 v_value = __hadd2(((const half2 *)QKV)[src_id + blockDim.x * 2],
+  half2 v_value = __hadd2(((half2 *)QKV)[src_id + blockDim.x * 2],
                           __ldg(&((const half2 *)bias_QKV)[threadIdx.x + blockDim.x * 2]));
-
+  ((half2 *)QKV)[src_id] = q_value;
+  ((half2 *)QKV)[src_id + blockDim.x] = k_value;
+  ((half2 *)QKV)[src_id + blockDim.x * 2] = v_value;
   if (is_roformer) {
     half2 ro_q = half2(-q_value.y, q_value.x);
     half2 ro_k = half2(-k_value.y, k_value.x);
@@ -92,7 +97,7 @@ __global__ void add_QKV_bias<__half>(const __half *QKV, const __half *bias_QKV, 
 }
 
 template <>
-__global__ void add_QKV_bias_padding<float>(const float *QKV, const float *bias_QKV, float *q_buf,
+__global__ void add_QKV_bias_padding<float>(float *QKV, const float *bias_QKV, float *q_buf,
                                             float *k_buf, float *v_buf, const int batch_size,
                                             const int seq_len, const int head_num,
                                             const int half_size_per_head, const bool is_roformer,
@@ -114,6 +119,10 @@ __global__ void add_QKV_bias_padding<float>(const float *QKV, const float *bias_
     q_value.x += q_bias.x, q_value.y += q_bias.y;
     k_value.x += k_bias.x, k_value.y += k_bias.y;
     v_value.x += v_bias.x, v_value.y += v_bias.y;
+    ((float2 *)QKV)[src_id] = q_value;
+    ((float2 *)QKV)[src_id + blockDim.x] = k_value;
+    ((float2 *)QKV)[src_id + blockDim.x * 2] = v_value;
+
 
     if (is_roformer) {
       float2 ro_q = make_float2(-q_value.y, q_value.x);
@@ -140,7 +149,7 @@ __global__ void add_QKV_bias_padding<float>(const float *QKV, const float *bias_
 }
 
 template <>
-__global__ void add_QKV_bias_padding<__half>(const __half *QKV, const __half *bias_QKV,
+__global__ void add_QKV_bias_padding<__half>(__half *QKV, const __half *bias_QKV,
                                              __half *q_buf, __half *k_buf, __half *v_buf,
                                              const int batch_size, const int seq_len,
                                              const int head_num, const int half_size_per_head,
@@ -156,11 +165,18 @@ __global__ void add_QKV_bias_padding<__half>(const __half *QKV, const __half *bi
   if (seq_id < batch_seq_len) {
     int src_id = (batch_offset + seq_id) * (blockDim.x * 3) + threadIdx.x;
     half2 q_value =
-        __hadd2(((const half2 *)QKV)[src_id], __ldg(&((const half2 *)bias_QKV)[threadIdx.x]));
-    half2 k_value = __hadd2(((const half2 *)QKV)[src_id + blockDim.x],
-                            __ldg(&((const half2 *)bias_QKV)[threadIdx.x + blockDim.x]));
-    half2 v_value = __hadd2(((const half2 *)QKV)[src_id + blockDim.x * 2],
-                            __ldg(&((const half2 *)bias_QKV)[threadIdx.x + blockDim.x * 2]));
+        __hadd2(((half2 *)QKV)[src_id], __ldg(&((const half2 *)bias_QKV)[threadIdx.x]));
+    half2 k_value = __hadd2(((half2 *)QKV)[src_id + blockDim.x],
+                            __ldg(&((half2 *)bias_QKV)[threadIdx.x + blockDim.x]));
+    half2 v_value = __hadd2(((half2 *)QKV)[src_id + blockDim.x * 2],
+                            __ldg(&(( half2 *)bias_QKV)[threadIdx.x + blockDim.x * 2]));
+
+                            
+    ((half2 *)QKV)[src_id] = q_value;
+    ((half2 *)QKV)[src_id + blockDim.x] = k_value;
+    ((half2 *)QKV)[src_id + blockDim.x * 2] = v_value;
+
+    
 
     if (is_roformer) {
       half2 ro_q = half2(-q_value.y, q_value.x);
@@ -182,6 +198,101 @@ __global__ void add_QKV_bias_padding<__half>(const __half *QKV, const __half *bi
     ((float *)v_buf)[trt_id] = 0.0f;
   }
 }
+
+
+
+template <>
+__global__ void add_QKV_bias_large_dim<float>(float *QKV, const float *bias_QKV, float *q_buf,
+                                    float *k_buf, float *v_buf, const int batch_size,
+                                    const int seq_len, const int head_num,
+                                    const int half_size_per_head, const bool is_roformer) {
+  int batch_id = blockIdx.y;
+  int seq_id = blockIdx.x;
+  int dim_bound = head_num * half_size_per_head;
+#pragma unroll
+  for (int i = threadIdx.x; i < dim_bound; i += blockDim.x){
+    int head_id = i / half_size_per_head;
+    int id = i % half_size_per_head;
+    int src_id = (blockIdx.y * gridDim.x + blockIdx.x) * (dim_bound * 3) + i;
+    int trt_id = ((head_id * batch_size + batch_id) * seq_len + seq_id) * half_size_per_head + id;
+
+    float2 q_value = ((float2 *)QKV)[src_id], q_bias = __ldg(&((float2 *)bias_QKV)[i]);
+    float2 k_value = ((float2 *)QKV)[src_id + dim_bound],
+         k_bias = __ldg(&((float2 *)bias_QKV)[i + dim_bound]);
+    float2 v_value = ((float2 *)QKV)[src_id + dim_bound * 2],
+         v_bias = __ldg(&((float2 *)bias_QKV)[i + dim_bound * 2]);
+    q_value.x += q_bias.x, q_value.y += q_bias.y;
+    k_value.x += k_bias.x, k_value.y += k_bias.y;
+    v_value.x += v_bias.x, v_value.y += v_bias.y;
+    // [hk:] copy out
+    ((float2 *)QKV)[src_id] = q_value;
+    ((float2 *)QKV)[src_id + dim_bound] = k_value;
+    ((float2 *)QKV)[src_id + dim_bound * 2] = v_value; 
+
+    if (is_roformer) {
+      float2 ro_q = make_float2(-q_value.y, q_value.x);
+      float2 ro_k = make_float2(-k_value.y, k_value.x);
+      float position_enc = __fdividef(seq_id, __powf(10000.0f, __fdividef(id, half_size_per_head)));
+      float sin_pos = __sinf(position_enc);
+      float cos_pos = __cosf(position_enc);
+      q_value.x = q_value.x * cos_pos + ro_q.x * sin_pos,
+      q_value.y = q_value.y * cos_pos + ro_q.y * sin_pos;
+      k_value.x = k_value.x * cos_pos + ro_k.x * sin_pos,
+      k_value.y = k_value.y * cos_pos + ro_k.y * sin_pos;
+    }
+
+    ((float2 *)q_buf)[trt_id] = q_value;
+    ((float2 *)k_buf)[trt_id] = k_value;
+    ((float2 *)v_buf)[trt_id] = v_value;
+  }
+}
+
+template <>
+__global__ void add_QKV_bias_large_dim<__half>(__half *QKV, const __half *bias_QKV, __half *q_buf,
+                                     __half *k_buf, __half *v_buf, const int batch_size,
+                                     const int seq_len, const int head_num,
+                                     const int half_size_per_head, const bool is_roformer) {
+  int batch_id = blockIdx.y;
+  int seq_id = blockIdx.x;
+  int dim_bound = head_num * half_size_per_head;
+#pragma unroll
+  for (int i = threadIdx.x; i < dim_bound; i += blockDim.x){
+    int head_id = i / half_size_per_head;
+    int id = i % half_size_per_head;
+    int src_id = (blockIdx.y * gridDim.x + blockIdx.x) * (dim_bound * 3) + i;
+    int trt_id = ((head_id * batch_size + batch_id) * seq_len + seq_id) * half_size_per_head + id;
+    half2 q_value =
+      __hadd2(((half2 *)QKV)[src_id], __ldg(&((const half2 *)bias_QKV)[i]));
+    half2 k_value = __hadd2(((half2 *)QKV)[src_id + dim_bound],
+                          __ldg(&((const half2 *)bias_QKV)[i + dim_bound]));
+    half2 v_value = __hadd2(((half2 *)QKV)[src_id + dim_bound * 2],
+                          __ldg(&((const half2 *)bias_QKV)[i + dim_bound * 2]));
+    // [hk:] copy out
+    ((half2 *)QKV)[src_id] = q_value;
+    ((half2 *)QKV)[src_id + dim_bound] = k_value;
+    ((half2 *)QKV)[src_id + dim_bound * 2] = v_value;     
+
+    if (is_roformer) {
+      half2 ro_q = half2(-q_value.y, q_value.x);
+      half2 ro_k = half2(-k_value.y, k_value.x);
+      float position_enc = __fdividef(seq_id, __powf(10000.0f, __fdividef(id, half_size_per_head)));
+      half2 sin_pos = __float2half2_rn(__sinf(position_enc));
+      half2 cos_pos = __float2half2_rn(__cosf(position_enc));
+      q_value = __hadd2(__hmul2(q_value, cos_pos), __hmul2(ro_q, sin_pos));
+      k_value = __hadd2(__hmul2(k_value, cos_pos), __hmul2(ro_k, sin_pos));
+    }
+
+    ((half2 *)q_buf)[trt_id] = q_value;
+    ((half2 *)k_buf)[trt_id] = k_value;
+    ((half2 *)v_buf)[trt_id] = v_value;
+  }
+}
+
+
+
+
+
+
 
 template <>
 __global__ void transpose<float>(const float *src, float *dst, const int batch_size,
@@ -236,4 +347,35 @@ __global__ void transpose_rm_padding<__half>(const __half *src, __half *dst, con
   int dst_offset = (blockIdx.x * head_num + head_id) * size_per_head + threadIdx.x;
   ((half2 *)dst)[dst_offset] = ((const half2 *)src)[src_offset];
 }
+
+template <>
+__global__ void transpose_large_dim<float>(const float *src, float *dst, const int batch_size,
+                                 const int seq_len, const int head_num, const int size_per_head) {
+  int batch_id = blockIdx.x / seq_len;
+  int seq_id = blockIdx.x % seq_len;
+  int head_id = threadIdx.y;
+#pragma unroll
+  for (int i = threadIdx.x; i < size_per_head; i += blockDim.x){
+    int src_offset =
+      ((head_id * batch_size + batch_id) * seq_len + seq_id) * size_per_head + i;
+    int dst_offset = (blockIdx.x * head_num + head_id) * size_per_head + i;
+    dst[dst_offset] = src[src_offset];
+  }
+}
+
+template <>
+__global__ void transpose_large_dim<__half>(const __half *src, __half *dst, const int batch_size,
+                                  const int seq_len, const int head_num, const int size_per_head) {
+  int batch_id = blockIdx.x / seq_len;
+  int seq_id = blockIdx.x % seq_len;
+  int head_id = threadIdx.y;
+#pragma unroll
+  for (int i = threadIdx.x; i < size_per_head; i += blockDim.x){
+    int src_offset =
+      ((head_id * batch_size + batch_id) * seq_len + seq_id) * size_per_head + i;
+    int dst_offset = (blockIdx.x * head_num + head_id) * size_per_head + i;
+    ((half2 *)dst)[dst_offset] = ((const half2 *)src)[src_offset];
+  }
+}
+
 }  // namespace bytetransformer

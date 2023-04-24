@@ -32,7 +32,7 @@ class IBTEncoder {
   virtual ~IBTEncoder() {
   }
   virtual void forward(int batch_size, int seq_len, Tensor &input, Tensor &attr_mask,
-                       Tensor &output, bool is_remove_padding, bool use_fused_attention,
+                       Tensor &output, Tensor &qkv_cache,bool is_remove_padding, bool use_fused_attention,
                        const ModelType model_type = ModelType::Bert,
                        const Tensor attention_bias = Tensor()) = 0;
 };
@@ -77,7 +77,7 @@ class BTEncoder : public IBTEncoder {
     }
   }
 
-  void forward(int batch_size, int seq_len, Tensor &input, Tensor &attr_mask, Tensor &output,
+  void forward(int batch_size, int seq_len, Tensor &input, Tensor &attr_mask, Tensor &output,Tensor &qkv_cache,
                bool is_remove_padding = true, bool use_fused_attention = true,
                const ModelType model_type = ModelType::Bert,
                const Tensor attention_bias = Tensor()) override {
@@ -87,10 +87,12 @@ class BTEncoder : public IBTEncoder {
         batch_size, _head_num, _head_size, seq_len, use_fused_attention, is_remove_padding,
         _use_fp32, model_type);
     encoder->initialize(encoder_param);
-
-    const T *from_tensor = get_ptr<T>(input);
+    // [xjm:] remove the const
+     T *from_tensor = get_ptr<T>(input);
     const T *atten_mask = get_ptr<T>(attr_mask);
     T *transformer_out = get_ptr<T>(output);
+    T *qkv_cache_ptr = get_ptr<T>(qkv_cache);
+
 
     at::cuda::CUDAGuard device_guard{input.device().index()};
 
@@ -102,7 +104,7 @@ class BTEncoder : public IBTEncoder {
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
     cublasHandle_t cublas_handle = at::cuda::getCurrentCUDABlasHandle();
     struct BertTransformerInferParam<T> infer_param {
-      from_tensor, atten_mask, transformer_out, buf, batch_size, seq_len, cublas_handle, stream
+      from_tensor, atten_mask, transformer_out,qkv_cache_ptr,buf, batch_size, seq_len, cublas_handle, stream
     };
     infer_param.attention_bias = attention_bias.defined() ? get_ptr<T>(attention_bias) : NULL;
 

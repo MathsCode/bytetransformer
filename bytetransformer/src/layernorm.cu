@@ -146,7 +146,86 @@ __global__ void add_bias_input_layernorm_restore_output<__half>(
   __shared__ float s_[2];
   layernorm(local_out, gamma, beta, ((half2 *)out2) + dst_offset, n, s_, use_fp32);
 }
+/*
+[hk:] kernels changed to remove the final layernorm in opt 
+*/
+template <>
+__global__ void add_bias_residual_restore_output<float>(
+    const float *out, const float *input, const float *bias, const void *gamma, const void *beta,
+    int n, bool use_fp32, float *out2, const int *batch_idx, const int *word_idx,
+    const int seq_len) {
+  const int batch_id = blockIdx.x / seq_len;
+  const int seq_id = blockIdx.x % seq_len;
+  const int batch_offset = __ldg(&batch_idx[batch_id]);
+  const int batch_seq_len = __ldg(&batch_idx[batch_id + 1]) - batch_offset;
+  int src_offset = (batch_offset + seq_id) * n + threadIdx.x;
+  int dst_offset = blockIdx.x * n + threadIdx.x;
+  if (seq_id >= batch_seq_len) {
+    out2[dst_offset] = 0.0f;
+    return;
+  }
+  // residual part
+  // *out_ptr = local_out;
+  out2[dst_offset] =
+      (float)(__ldg(&out[src_offset]) + __ldg(&input[src_offset]) + __ldg(&bias[threadIdx.x]));
+  // __shared__ float s_[2];
+  // layernorm(local_out, gamma, beta, out2 + dst_offset, n, s_);
+}
 
+template <>
+__global__ void add_bias_residual_restore_output<__half>(
+    const __half *out, const __half *input, const __half *bias, const void *gamma,
+    const void *beta, int n, bool use_fp32, __half *out2, const int *batch_idx,
+    const int *word_idx, const int seq_len) {
+  const int batch_id = blockIdx.x / seq_len;
+  const int seq_id = blockIdx.x % seq_len;
+  const int batch_offset = __ldg(&batch_idx[batch_id]);
+  const int batch_seq_len = __ldg(&batch_idx[batch_id + 1]) - batch_offset;
+  int src_offset = (batch_offset + seq_id) * n / 2 + threadIdx.x;
+  int dst_offset = blockIdx.x * n / 2 + threadIdx.x;
+  if (seq_id >= batch_seq_len) {
+    ((float *)out2)[dst_offset] = 0.0f;
+    return;
+  }
+  // residual part
+  // half2 *out_ptr = ((half2 *)out2) + dst_offset;
+  *(((half2 *)out2) + dst_offset) = __hadd2(
+      __hadd2(__ldg(&((half2 *)out)[src_offset]), __ldg(&((const half2 *)input)[src_offset])),
+      __ldg(&((const half2 *)bias)[threadIdx.x]));
+  // *out_ptr = local_out;
+  // __shared__ float s_[2];
+  // layernorm(local_out, gamma, beta, ((half2 *)out2) + dst_offset, n, s_, use_fp32);
+}
+template <>
+__global__ void add_bias_residual<float>(float *out, const float *input, const float *bias,
+                                                const void *gamma, const void *beta, const float alpha, int n,
+                                                bool use_fp32) {
+  int offset = blockIdx.x * n + threadIdx.x;
+
+  out[offset] = (float)(out[offset] + alpha * __ldg(&input[offset]) + __ldg(&bias[threadIdx.x]));
+
+  // __shared__ float s_[2];
+  // layernorm(local_out, gamma, beta, out + offset, n, s_);
+}
+
+template <>
+__global__ void add_bias_residual<__half>(__half *out, const __half *input,
+                                                 const __half *bias, const void *gamma,
+                                                 const void *beta, const float alpha, int n, bool use_fp32) {
+  int offset = blockIdx.x * n / 2 + threadIdx.x;
+
+  // half2 local_out((__half)0.0f, (__half)0.0f);
+  if (threadIdx.x < n / 2){
+    half2 temp_input = __ldg(&((const half2 *)input)[offset]);
+    temp_input.x = __float2half(alpha) * temp_input.x;
+    temp_input.y = __float2half(alpha) * temp_input.y;
+    ((half2 *)out)[offset] = __hadd2(__hadd2(((half2 *)out)[offset], temp_input),
+                        __ldg(&((const half2 *)bias)[threadIdx.x]));
+  }
+
+  // __shared__ float s_[2];
+  // layernorm(local_out, gamma, beta, ((half2 *)out) + offset, n, s_, use_fp32);
+}
 // ************** for pre_norm: out + bias + input -> out2, layernorm(out2) -> out ****************
 template <>
 __global__ void add_bias_input_out_layernorm<float>(float *out, const float *input,

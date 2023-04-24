@@ -23,6 +23,7 @@
 #include <cuda_fp16.h>
 #include <nvToolsExt.h>
 
+#include <tuple>
 #include "c10/cuda/CUDAGuard.h"
 #include "ATen/cuda/CUDAContext.h"
 #include "torch/all.h"
