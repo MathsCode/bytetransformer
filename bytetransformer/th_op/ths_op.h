@@ -92,8 +92,9 @@ class BertTransformer : public torch::jit::CustomClassHolder {
     int seq_len = input_size[1];
 
     auto output = torch::empty_like(input);
+    auto origin = torch::empty_like(input);
     Tensor buf = torch::empty_like(input);
-    btencoder->forward(batch_size, seq_len, input, attr_mask, output, buf,is_remove_padding,
+    btencoder->forward(batch_size, seq_len, input, origin,attr_mask, output, buf,is_remove_padding,
                        use_fused_attention);
     return output;
   }

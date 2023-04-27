@@ -125,6 +125,8 @@ if __name__ == "__main__":
         hidden_states = from_tensor
         for layer in range(n_layers):
             input_tensor = hidden_states
+            hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
+                                         weight=attr_output_layernorm_gamma[layer], bias=attr_output_layernorm_beta[layer]) 
             qkv = torch.matmul(hidden_states, qkv_kernel[layer]) + qkv_bias[layer]
 
             q, k, v = qkv.chunk(3, dim=-1)
@@ -136,7 +138,7 @@ if __name__ == "__main__":
             scores = torch.matmul(q, k.transpose(-2, -1)) / (head_size ** .5)
 
             scores -= 10000.0 * (1.0 - attr_mask.unsqueeze(1))
-
+           
             probs = F.softmax(scores, dim=-1)
             # (B, H, S, S) @ (B, H, S, W) -> (B, H, S, W) -trans-> (B, S, H, W)
             h = torch.matmul(probs, v).permute(0, 2, 1, 3).contiguous()
@@ -185,15 +187,20 @@ if __name__ == "__main__":
             np.savetxt(file_list[idx], set_dtype(var.flatten(), "fp32").cpu().numpy(), delimiter='\n', fmt='%f')
             idx = idx + 1
     else:
+        
         torch.ops.load_library(lib_path)
+        print("success")
         warmup_iters = 5
         for i in range(warmup_iters + iters):
             if i == warmup_iters:
                 t0 = timeit.default_timer()
 
             hidden_states = from_tensor
-
+            
             for layer in range(n_layers):
+                input_tensor = hidden_states
+                hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
+                                         weight=attr_output_layernorm_gamma[layer], bias=attr_output_layernorm_beta[layer]) 
                 hidden_states,new_qkv = torch.ops.ByteTransformer.BertTransformer(
                     head_num, head_size,
                     qkv_kernel[layer], qkv_bias[layer],
@@ -201,7 +208,7 @@ if __name__ == "__main__":
                     attr_output_layernorm_gamma[layer], attr_output_layernorm_beta[layer],
                     inter_kernel[layer], inter_bias[layer], output_kernel[layer], output_bias[layer],
                     output_layernorm_gamma[layer], output_layernorm_beta[layer],
-                    hidden_states, attr_mask,
+                    hidden_states,input_tensor, attr_mask,
                     is_remove_padding, use_fused_attention)
 
             output = hidden_states

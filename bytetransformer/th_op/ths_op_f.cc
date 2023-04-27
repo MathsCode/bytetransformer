@@ -25,12 +25,13 @@ namespace torch_ths {
 
 using torch::Tensor;
 
+// [xjm:] add the origin tensor
 std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size, Tensor qkv_kernel, Tensor qkv_bias,
                           Tensor attr_output_kernel, Tensor attr_output_bias,
                           Tensor attr_output_layernorm_gamma, Tensor attr_output_layernorm_beta,
                           Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel,
                           Tensor output_bias, Tensor output_layernorm_gamma,
-                          Tensor output_layernorm_beta, Tensor input, Tensor attr_mask,
+                          Tensor output_layernorm_beta, Tensor input, Tensor origin, Tensor attr_mask,
                           bool is_remove_padding, bool use_fused_attention) {
   const at::ScalarType _st = qkv_kernel.scalar_type();
   CHECK_INPUT(qkv_kernel, _st);                    // hidden_dim, hidden_dim * 3
@@ -76,7 +77,7 @@ std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size
       throw std::runtime_error("Wrong Tensor type.");
   }
   
-  btencoder->forward(batch_size, seq_len, input, attr_mask, output, qkv_cache, is_remove_padding, 
+  btencoder->forward(batch_size, seq_len, input, origin,attr_mask, output, qkv_cache, is_remove_padding, 
                      use_fused_attention);
   delete btencoder;
   return {output,qkv_cache};
@@ -90,7 +91,7 @@ static auto registry = torch::RegisterOperators(
     "Tensor attr_output_kernel, Tensor attr_output_bias,"
     "Tensor attr_output_layernorm_gamma, Tensor attr_output_layernorm_beta,"
     "Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel, Tensor output_bias,"
-    "Tensor output_layernorm_gamma, Tensor output_layernorm_beta, Tensor input, Tensor attr_mask,"
+    "Tensor output_layernorm_gamma, Tensor output_layernorm_beta, Tensor input,Tensor origin, Tensor attr_mask,"
     "bool is_remove_padding = True, bool use_fused_attention = True) -> "
     "(Tensor,Tensor)",
     &TransformerEncoder);

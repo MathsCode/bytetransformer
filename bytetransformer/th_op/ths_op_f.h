@@ -29,7 +29,7 @@ std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size
                           Tensor attr_output_layernorm_gamma, Tensor attr_output_layernorm_beta,
                           Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel,
                           Tensor output_bias, Tensor output_layernorm_gamma,
-                          Tensor output_layernorm_beta, Tensor input, Tensor attr_mask,
+                          Tensor output_layernorm_beta, Tensor input, Tensor origin,Tensor attr_mask,
                           bool is_remove_padding, bool use_fused_attention);
 
 }  // namespace torch_ths

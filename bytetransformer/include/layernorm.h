@@ -266,7 +266,7 @@ __global__ void add_bias_residual(T *out, const T *input, const T *bias, const v
 
 // [xjm:]remove the input const
 template <const int ite>
-__global__ void add_bias_input_layernorm_v2(float *out,  float *input, float *residual,const float *bias,
+__global__ void add_bias_input_layernorm_v2(float *out,   float *input, float *residual,const float *bias,
                                             const void *gamma, const void *beta, int n,
                                             bool use_fp32) {
   int offset = blockIdx.x * n;
@@ -291,7 +291,7 @@ __global__ void add_bias_input_layernorm_v2(float *out,  float *input, float *re
 
 // [xjm: remove the input const]
 template <const int ite>
-__global__ void add_bias_input_layernorm_v2(__half *out, __half *input, __half *residual,const __half *bias,
+__global__ void add_bias_input_layernorm_v2(__half *out,  __half *input, __half *residual,const __half *bias,
                                             const void *gamma, const void *beta, int n,
                                             bool use_fp32) {
   half2 *out_ptr = (half2 *)out;

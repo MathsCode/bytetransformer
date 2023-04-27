@@ -29,6 +29,7 @@ void BertTransformer<OpType>::bert_infer(
     BertTransformerInferParam infer_param) {
         // [xjm:] remove the const
    DataType_* from_tensor = infer_param.input_tensor;
+  DataType_* origin_tensor = infer_param.origin_tensor;
   const DataType_* atten_mask = infer_param.atten_mask;
   DataType_* transformer_out = infer_param.transformer_output;
   DataType_* qkv_cache_ptr = infer_param.qkv_cache_ptr;
@@ -117,7 +118,7 @@ void BertTransformer<OpType>::bert_infer(
     DataType_* residual;
     cudaMalloc((void **)&residual,m*n*sizeof(DataType_));
   add_bias_input_layernorm_kernel_launcher(
-      attr_matmul_buf, from_tensor, residual,param_.attr_output_bias,
+      attr_matmul_buf, origin_tensor, residual,param_.attr_output_bias,
       param_.attr_output_layernorm_gamma, param_.attr_output_layernorm_beta, m,
       n, hidden_dim, stream, use_fp32_);
     // cudaMemcpy(qkv_cache_ptr,residual,m*n*sizeof(DataType_),cudaMemcpyDeviceToDevice);
