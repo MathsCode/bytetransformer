@@ -24,7 +24,7 @@ namespace bytetransformer {
 namespace torch_ths {
 using torch::Tensor;
 
-std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size, Tensor qkv_kernel, Tensor qkv_bias,
+std::tuple<Tensor,Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size, Tensor qkv_kernel, Tensor qkv_bias,
                           Tensor attr_output_kernel, Tensor attr_output_bias,
                           Tensor attr_output_layernorm_gamma, Tensor attr_output_layernorm_beta,
                           Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel,

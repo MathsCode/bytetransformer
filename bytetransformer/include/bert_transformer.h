@@ -88,7 +88,7 @@ struct BertTransformerInferParam {
   T *origin_tensor;
   const T *atten_mask;    // [batch_size, seq_len, seq_len]  [1, 0]
   T *transformer_output;  // [batch_size, seq_len, hidden_dim]
-  T *qkv_cache_ptr;
+  // T *qkv_cache_ptr;
   void *buf;
   int batch_size;
   int seq_len;
@@ -97,6 +97,8 @@ struct BertTransformerInferParam {
   const T *attention_bias = NULL;         // [head_num, seq_len, seq_len]
   const uint32_t *position_ids = NULL;    // [batch_size, seq_len]
   const uint32_t *token_type_ids = NULL;  // [batch_size, seq_len]
+  T *k_cache_ptr = NULL;
+  T *v_cache_ptr = NULL;
 };
 
 template <OperationType OpType>

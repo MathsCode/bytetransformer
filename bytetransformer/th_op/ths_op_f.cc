@@ -26,7 +26,7 @@ namespace torch_ths {
 using torch::Tensor;
 
 // [xjm:] add the origin tensor
-std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size, Tensor qkv_kernel, Tensor qkv_bias,
+std::tuple<Tensor,Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size, Tensor qkv_kernel, Tensor qkv_bias,
                           Tensor attr_output_kernel, Tensor attr_output_bias,
                           Tensor attr_output_layernorm_gamma, Tensor attr_output_layernorm_beta,
                           Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel,
@@ -64,7 +64,8 @@ std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size
                               output_layernorm_gamma,
                               output_layernorm_beta};
   auto output = torch::empty_like(input);
-  auto qkv_cache = torch::empty({batch_size*seq_len*head_num*head_size*3},input.options());
+  auto k_cache = torch::empty({batch_size*seq_len*head_num*head_size},input.options());
+  auto v_cache = torch::empty({batch_size*seq_len*head_num*head_size},input.options());
   torch_ext::IBTEncoder *btencoder = nullptr;
   switch (_st) {
     case at::ScalarType::Float:
@@ -77,10 +78,10 @@ std::tuple<Tensor,Tensor> TransformerEncoder(int64_t head_num, int64_t head_size
       throw std::runtime_error("Wrong Tensor type.");
   }
   
-  btencoder->forward(batch_size, seq_len, input, origin,attr_mask, output, qkv_cache, is_remove_padding, 
+  btencoder->forward(batch_size, seq_len, input, origin, attr_mask, output, k_cache, v_cache, is_remove_padding, 
                      use_fused_attention);
   delete btencoder;
-  return {output,qkv_cache};
+  return {output, k_cache, v_cache};
   // return output;
 }
 
@@ -93,7 +94,7 @@ static auto registry = torch::RegisterOperators(
     "Tensor inter_kernel, Tensor inter_bias, Tensor output_kernel, Tensor output_bias,"
     "Tensor output_layernorm_gamma, Tensor output_layernorm_beta, Tensor input,Tensor origin, Tensor attr_mask,"
     "bool is_remove_padding = True, bool use_fused_attention = True) -> "
-    "(Tensor,Tensor)",
+    "(Tensor,Tensor,Tensor)",
     &TransformerEncoder);
 
 }  // namespace torch_ths

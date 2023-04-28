@@ -190,7 +190,7 @@ void CutlassAttention<OpType>::infer_impl(AttentionInferParam *infer_param) {
     } else {
       add_QKV_bias<<<grid, block, 0, stream>>>(infer_param->qkv, this->param_.attr_bias_QKV, query,
                                                key, value, batch_size, seq_len, head_num,
-                                               size_per_head_half, is_roformer);
+                                               size_per_head_half, infer_param->k_cache_ptr, infer_param->v_cache_ptr, is_roformer);
     }
   }
 

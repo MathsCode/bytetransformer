@@ -56,6 +56,8 @@ struct AttentionInferParam {
   const T *attention_bias = nullptr;         // [head_num, seq_len, seq_len]
   const uint32_t *position_ids = nullptr;    // [batch_size, seq_len]
   const uint32_t *token_type_ids = nullptr;  // [batch_size, seq_len]
+  T *k_cache_ptr = nullptr;
+  T *v_cache_ptr = nullptr;
 };
 
 template <OperationType OpType>

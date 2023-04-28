@@ -32,7 +32,7 @@ void BertTransformer<OpType>::bert_infer(
   DataType_* origin_tensor = infer_param.origin_tensor;
   const DataType_* atten_mask = infer_param.atten_mask;
   DataType_* transformer_out = infer_param.transformer_output;
-  DataType_* qkv_cache_ptr = infer_param.qkv_cache_ptr;
+  //DataType_* qkv_cache_ptr = infer_param.qkv_cache_ptr;
   void* buf = infer_param.buf;
   const int batch_size = infer_param.batch_size;
   const int seq_len = infer_param.seq_len;
@@ -102,8 +102,10 @@ void BertTransformer<OpType>::bert_infer(
         cublas_handle, stream, et_param
   };
   attention_infer_param.attention_bias = infer_param.attention_bias;
+  attention_infer_param.k_cache_ptr = infer_param.k_cache_ptr;
+  attention_infer_param.v_cache_ptr = infer_param.v_cache_ptr;
   attention_layer_->infer(attention_infer_param);
-  cudaMemcpy(qkv_cache_ptr,qkv_buf,m*n*3*sizeof(DataType_),cudaMemcpyDeviceToDevice);
+  //cudaMemcpy(qkv_cache_ptr,qkv_buf,m*n*3*sizeof(DataType_),cudaMemcpyDeviceToDevice);
 
   dense_layer_kernel_launcher(attr_out_buf, param_.attr_output_kernel,
                               attr_matmul_buf, m, k, n, cublas_handle, stream,

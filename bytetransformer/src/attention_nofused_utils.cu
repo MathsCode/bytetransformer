@@ -21,10 +21,10 @@
 
 namespace bytetransformer {
 template <>
-__global__ void add_QKV_bias<float>( float *QKV, const float *bias_QKV, float *q_buf,
+__global__ void add_QKV_bias<float>(float *QKV, const float *bias_QKV, float *q_buf,
                                     float *k_buf, float *v_buf, const int batch_size,
                                     const int seq_len, const int head_num,
-                                    const int half_size_per_head, const bool is_roformer) {
+                                    const int half_size_per_head, float* k_cache, float* v_cache, const bool is_roformer) {
   int batch_id = blockIdx.y;
   int seq_id = blockIdx.x;
   int head_id = threadIdx.x / half_size_per_head;
@@ -43,6 +43,10 @@ __global__ void add_QKV_bias<float>( float *QKV, const float *bias_QKV, float *q
   ((float2 *)QKV)[src_id] = q_value;
   ((float2 *)QKV)[src_id + blockDim.x] = k_value;
   ((float2 *)QKV)[src_id + blockDim.x * 2] = v_value;
+
+  int local_src_id = (blockIdx.x * gridDim.y + blockIdx.y) * blockDim.x + threadIdx.x;
+  ((float2 *)k_cache)[local_src_id] = k_value;
+  ((float2 *)v_cache)[local_src_id] = v_value;
 
   if (is_roformer) {
     float2 ro_q = make_float2(-q_value.y, q_value.x);
@@ -65,7 +69,7 @@ template <>
 __global__ void add_QKV_bias<__half>( __half *QKV, const __half *bias_QKV, __half *q_buf,
                                      __half *k_buf, __half *v_buf, const int batch_size,
                                      const int seq_len, const int head_num,
-                                     const int half_size_per_head, const bool is_roformer) {
+                                     const int half_size_per_head, __half* k_cache, __half* v_cache, const bool is_roformer) {
   int batch_id = blockIdx.y;
   int seq_id = blockIdx.x;
   int head_id = threadIdx.x / half_size_per_head;
@@ -81,6 +85,11 @@ __global__ void add_QKV_bias<__half>( __half *QKV, const __half *bias_QKV, __hal
   ((half2 *)QKV)[src_id] = q_value;
   ((half2 *)QKV)[src_id + blockDim.x] = k_value;
   ((half2 *)QKV)[src_id + blockDim.x * 2] = v_value;
+
+  int local_src_id = (blockIdx.x * gridDim.y + blockIdx.y) * blockDim.x + threadIdx.x;
+  ((half2 *)k_cache)[local_src_id] = k_value;
+  ((half2 *)v_cache)[local_src_id] = v_value;
+
   if (is_roformer) {
     half2 ro_q = half2(-q_value.y, q_value.x);
     half2 ro_k = half2(-k_value.y, k_value.x);
@@ -123,7 +132,6 @@ __global__ void add_QKV_bias_padding<float>(float *QKV, const float *bias_QKV, f
     ((float2 *)QKV)[src_id + blockDim.x] = k_value;
     ((float2 *)QKV)[src_id + blockDim.x * 2] = v_value;
 
-
     if (is_roformer) {
       float2 ro_q = make_float2(-q_value.y, q_value.x);
       float2 ro_k = make_float2(-k_value.y, k_value.x);
@@ -140,6 +148,7 @@ __global__ void add_QKV_bias_padding<float>(float *QKV, const float *bias_QKV, f
     ((float2 *)q_buf)[trt_id] = q_value;
     ((float2 *)k_buf)[trt_id] = k_value;
     ((float2 *)v_buf)[trt_id] = v_value;
+
   } else {
     float2 zero = make_float2(0.0f, 0.0f);
     ((float2 *)q_buf)[trt_id] = zero;
@@ -176,8 +185,6 @@ __global__ void add_QKV_bias_padding<__half>(__half *QKV, const __half *bias_QKV
     ((half2 *)QKV)[src_id + blockDim.x] = k_value;
     ((half2 *)QKV)[src_id + blockDim.x * 2] = v_value;
 
-    
-
     if (is_roformer) {
       half2 ro_q = half2(-q_value.y, q_value.x);
       half2 ro_k = half2(-k_value.y, k_value.x);
@@ -205,7 +212,7 @@ template <>
 __global__ void add_QKV_bias_large_dim<float>(float *QKV, const float *bias_QKV, float *q_buf,
                                     float *k_buf, float *v_buf, const int batch_size,
                                     const int seq_len, const int head_num,
-                                    const int half_size_per_head, const bool is_roformer) {
+                                    const int half_size_per_head, float* k_cache, float* v_cache, const bool is_roformer) {
   int batch_id = blockIdx.y;
   int seq_id = blockIdx.x;
   int dim_bound = head_num * half_size_per_head;
@@ -227,7 +234,11 @@ __global__ void add_QKV_bias_large_dim<float>(float *QKV, const float *bias_QKV,
     // [hk:] copy out
     ((float2 *)QKV)[src_id] = q_value;
     ((float2 *)QKV)[src_id + dim_bound] = k_value;
-    ((float2 *)QKV)[src_id + dim_bound * 2] = v_value; 
+    ((float2 *)QKV)[src_id + dim_bound * 2] = v_value;
+
+    int local_src_id = (blockIdx.x * gridDim.y + blockIdx.y) * dim_bound + i;
+    ((float2 *)k_cache)[local_src_id] = k_value;
+    ((float2 *)v_cache)[local_src_id] = v_value;
 
     if (is_roformer) {
       float2 ro_q = make_float2(-q_value.y, q_value.x);
@@ -251,7 +262,7 @@ template <>
 __global__ void add_QKV_bias_large_dim<__half>(__half *QKV, const __half *bias_QKV, __half *q_buf,
                                      __half *k_buf, __half *v_buf, const int batch_size,
                                      const int seq_len, const int head_num,
-                                     const int half_size_per_head, const bool is_roformer) {
+                                     const int half_size_per_head, __half* k_cache, __half* v_cache, const bool is_roformer) {
   int batch_id = blockIdx.y;
   int seq_id = blockIdx.x;
   int dim_bound = head_num * half_size_per_head;
@@ -270,7 +281,11 @@ __global__ void add_QKV_bias_large_dim<__half>(__half *QKV, const __half *bias_Q
     // [hk:] copy out
     ((half2 *)QKV)[src_id] = q_value;
     ((half2 *)QKV)[src_id + dim_bound] = k_value;
-    ((half2 *)QKV)[src_id + dim_bound * 2] = v_value;     
+    ((half2 *)QKV)[src_id + dim_bound * 2] = v_value;
+    
+    int local_src_id = (blockIdx.x * gridDim.y + blockIdx.y) * dim_bound + i;
+    ((half2 *)k_cache)[local_src_id] = k_value;
+    ((half2 *)v_cache)[local_src_id] = v_value;
 
     if (is_roformer) {
       half2 ro_q = half2(-q_value.y, q_value.x);

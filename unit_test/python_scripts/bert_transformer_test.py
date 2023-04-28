@@ -117,8 +117,8 @@ if __name__ == "__main__":
     print(mask)
     attr_mask                   = set_dtype(torch.tile(seqlen_mask, dims=(seqlen,)).reshape(batch_size, seqlen, seqlen).cuda(), dtype)
     # autopep8: on
-    is_remove_padding = True
-    use_fused_attention = True
+    is_remove_padding = False
+    use_fused_attention = False
     transformer_output = [None for _ in range(n_layers)]
 
     with torch.no_grad():
@@ -130,6 +130,8 @@ if __name__ == "__main__":
             qkv = torch.matmul(hidden_states, qkv_kernel[layer]) + qkv_bias[layer]
 
             q, k, v = qkv.chunk(3, dim=-1)
+            k_cache = k
+            v_cache = v
             q = transpose_for_scores(q, head_num, head_size)
             k = transpose_for_scores(k, head_num, head_size)
             v = transpose_for_scores(v, head_num, head_size)
@@ -201,7 +203,7 @@ if __name__ == "__main__":
                 input_tensor = hidden_states
                 hidden_states = F.layer_norm(hidden_states, (hidden_dim, ),
                                          weight=attr_output_layernorm_gamma[layer], bias=attr_output_layernorm_beta[layer]) 
-                hidden_states,new_qkv = torch.ops.ByteTransformer.BertTransformer(
+                hidden_states,k,v = torch.ops.ByteTransformer.BertTransformer(
                     head_num, head_size,
                     qkv_kernel[layer], qkv_bias[layer],
                     attr_output_kernel[layer], attr_output_bias[layer],
@@ -212,13 +214,16 @@ if __name__ == "__main__":
                     is_remove_padding, use_fused_attention)
 
             output = hidden_states
-            output_qkv = new_qkv.reshape(batch_size,seqlen,hidden_dim*3)
+            output_k = k.reshape(batch_size,seqlen,hidden_dim)
+            output_v = v.reshape(batch_size,seqlen,hidden_dim)
 
         t1 = timeit.default_timer()
         masked_output = transformer_output[-1]
         masked_output = masked_output * set_dtype(seqlen_mask.unsqueeze(-1).cuda(), dtype)
-        print("max diff qkv:", torch.max(torch.abs(output_qkv - qkv)).cpu())
-        print("diff num qkv:", torch.sum(torch.abs((output_qkv - qkv) / output_qkv) > 1e-2).cpu())
+        print("max diff k:", torch.max(torch.abs(output_k - k_cache)).cpu())
+        print("diff num k:", torch.sum(torch.abs((output_k - k_cache) / output_k) > 1e-2).cpu())
+        print("max diff v:", torch.max(torch.abs(output_v - v_cache)).cpu())
+        print("diff num v:", torch.sum(torch.abs((output_v - v_cache) / output_v) > 1e-2).cpu())
         print("max diff output:", torch.max(torch.abs(masked_output - output)).cpu())
         print("diff num output:", torch.sum(torch.abs((masked_output - output) / output) > 1e-2).cpu())
         print("time costs:    {:.2f} ms".format((t1 - t0) * 1000 / iters))
