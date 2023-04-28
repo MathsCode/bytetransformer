@@ -25,7 +25,7 @@ namespace bytetransformer {
 template <typename T>
 __global__ void add_QKV_bias( T *QKV, const T *bias_QKV, T *q_buf, T *k_buf, T *v_buf,
                              const int batch_size, const int seq_len, const int head_num,
-                             const int half_size_per_head, const bool is_roformer);
+                             const int half_size_per_head, T *k_cache, T *v_cache, const bool is_roformer);
 
 template <typename T>
 __global__ void add_QKV_bias_padding( T *QKV, const T *bias_QKV, T *q_buf, T *k_buf, T *v_buf,
@@ -37,7 +37,7 @@ __global__ void add_QKV_bias_padding( T *QKV, const T *bias_QKV, T *q_buf, T *k_
 template <typename T>
 __global__ void add_QKV_bias_large_dim(T *QKV, const T *bias_QKV, T *q_buf, T *k_buf, T *v_buf,
                              const int batch_size, const int seq_len, const int head_num,
-                             const int half_size_per_head, const bool is_roformer);
+                             const int half_size_per_head, T *k_cache, T *v_cache, const bool is_roformer);
     
 
 template <typename T>

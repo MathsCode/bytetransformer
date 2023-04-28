@@ -31,8 +31,8 @@ class IBTEncoder {
  public:
   virtual ~IBTEncoder() {
   }
-  virtual void forward(int batch_size, int seq_len, Tensor &input, Tensor &origin,Tensor &attr_mask,
-                       Tensor &output, Tensor &qkv_cache,bool is_remove_padding, bool use_fused_attention,
+  virtual void forward(int batch_size, int seq_len, Tensor &input, Tensor &origin, Tensor &attr_mask,
+                       Tensor &output, Tensor &k_cache, Tensor &v_cache, bool is_remove_padding, bool use_fused_attention,
                        const ModelType model_type = ModelType::Bert,
                        const Tensor attention_bias = Tensor()) = 0;
 };
@@ -77,7 +77,7 @@ class BTEncoder : public IBTEncoder {
     }
   }
 
-  void forward(int batch_size, int seq_len, Tensor &input, Tensor &origin,Tensor &attr_mask, Tensor &output,Tensor &qkv_cache,
+  void forward(int batch_size, int seq_len, Tensor &input, Tensor &origin, Tensor &attr_mask, Tensor &output, Tensor &k_cache, Tensor &v_cache,
                bool is_remove_padding = true, bool use_fused_attention = true,
                const ModelType model_type = ModelType::Bert,
                const Tensor attention_bias = Tensor()) override {
@@ -91,7 +91,7 @@ class BTEncoder : public IBTEncoder {
      T *from_tensor = get_ptr<T>(input);
     const T *atten_mask = get_ptr<T>(attr_mask);
     T *transformer_out = get_ptr<T>(output);
-    T *qkv_cache_ptr = get_ptr<T>(qkv_cache);
+    //T *qkv_cache_ptr = get_ptr<T>(qkv_cache);
     T *origin_ptr = get_ptr<T>(origin);
 
 
@@ -106,9 +106,11 @@ class BTEncoder : public IBTEncoder {
     cublasHandle_t cublas_handle = at::cuda::getCurrentCUDABlasHandle();
     // [xjm:] add the origin_tensor
     struct BertTransformerInferParam<T> infer_param {
-      from_tensor, origin_ptr,atten_mask, transformer_out,qkv_cache_ptr,buf, batch_size, seq_len, cublas_handle, stream
+      from_tensor, origin_ptr, atten_mask, transformer_out, buf, batch_size, seq_len, cublas_handle, stream
     };
     infer_param.attention_bias = attention_bias.defined() ? get_ptr<T>(attention_bias) : NULL;
+    infer_param.k_cache_ptr = get_ptr<T>(k_cache);
+    infer_param.v_cache_ptr = get_ptr<T>(v_cache);
 
     encoder->infer(infer_param);
     delete encoder;

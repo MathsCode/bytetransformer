@@ -31,6 +31,8 @@ void Attention<OpType>::nofused_infer(AttentionInferParam infer_param) {
   const int seq_len = infer_param.seq_len;
   cudaStream_t stream = infer_param.stream;
   ET_Param et_param = infer_param.et_param;
+  DataType_* k_cache_ptr = infer_param.k_cache_ptr;
+  DataType_* v_cache_ptr = infer_param.v_cache_ptr;
 
   int input_tensor_size = batch_size * head_num_ * seq_len * size_per_head_;
   int qk_buf_size = ((batch_size * head_num_ * seq_len * seq_len + 15) >> 4)
@@ -69,12 +71,12 @@ void Attention<OpType>::nofused_infer(AttentionInferParam infer_param) {
     if (block.x <= 1024){
       add_QKV_bias<<<grid, block, 0, stream>>>(
           infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
-          seq_len, head_num_, size_per_head_ / 2, is_roformer);
+          seq_len, head_num_, size_per_head_ / 2, k_cache_ptr, v_cache_ptr, is_roformer);
     }
     else{
       add_QKV_bias_large_dim<<<grid, dim3(512), 0, stream>>>(
           infer_param.qkv, param_.attr_bias_QKV, query, key, value, batch_size,
-          seq_len, head_num_, size_per_head_ / 2, is_roformer);
+          seq_len, head_num_, size_per_head_ / 2, k_cache_ptr, v_cache_ptr, is_roformer);
     }
   }
   grid.y = 1;
